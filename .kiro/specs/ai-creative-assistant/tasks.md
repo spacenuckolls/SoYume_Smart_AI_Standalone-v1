@@ -13,6 +13,7 @@
 - [x] 2. Implement core data models and interfaces
 
 
+
   - Define TypeScript interfaces for Story, Character, Scene, and related data structures
   - Create database schema with tables for stories, characters, scenes, analysis cache, and user settings
   - Implement data access layer with CRUD operations and encryption/decryption methods
@@ -20,6 +21,8 @@
   - _Requirements: 8.1, 8.2, 8.3_
 
 - [ ] 3. Build AI provider abstraction layer
+
+
   - Create base AIProvider interface with support for 'cowriter', 'local', and 'cloud' types
   - Implement provider registry system for managing multiple AI providers
   - Create intelligent routing logic to select appropriate AI provider based on task type
