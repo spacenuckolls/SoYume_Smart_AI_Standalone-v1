@@ -54,7 +54,7 @@ export interface Genre {
 export interface StoryStructure {
   type: 'save-the-cat' | 'hero-journey' | 'three-act' | 'monogatari' | 'custom';
   beats: StructureBeat[];
-  currentBeat?: string;
+  currentBeat?: string | undefined;
 }
 
 export interface StructureBeat {

@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 import { Story, Character, Chapter, Scene } from '../../shared/types/Story';
+import { StoryValidator, ValidationResult } from '../../shared/validation/StoryValidation';
+import { StoryUtils } from '../../shared/utils/StoryUtils';
 
 // Simple in-memory database for initial development
 // This will be replaced with a proper database in later iterations
@@ -123,31 +125,42 @@ export class DatabaseManager {
   }
 
   // Story operations
-  async saveStory(story: Story): Promise<void> {
+  async saveStory(story: Story): Promise<ValidationResult> {
     try {
+      // Validate story before saving
+      const validation = StoryValidator.validate(story);
+      if (!validation.isValid) {
+        console.warn('Story validation failed:', validation.errors);
+        // Still save the story but return validation results
+      }
+
+      // Update word count before saving
+      const updatedStory = StoryUtils.updateWordCount(story);
+
       // Store the story with encrypted sensitive data
       const storyData = {
-        ...story,
-        genre: this.encrypt(JSON.stringify(story.genre)),
-        structure: this.encrypt(JSON.stringify(story.structure)),
-        metadata: this.encrypt(JSON.stringify(story.metadata)),
-        analysisCache: this.encrypt(JSON.stringify(story.analysisCache)),
+        ...updatedStory,
+        genre: this.encrypt(JSON.stringify(updatedStory.genre)),
+        structure: this.encrypt(JSON.stringify(updatedStory.structure)),
+        metadata: this.encrypt(JSON.stringify(updatedStory.metadata)),
+        analysisCache: this.encrypt(JSON.stringify(updatedStory.analysisCache)),
         updatedAt: new Date()
       };
 
-      this.store.stories.set(story.id, storyData);
+      this.store.stories.set(updatedStory.id, storyData);
 
       // Save characters
-      for (const character of story.characters) {
+      for (const character of updatedStory.characters) {
         await this.saveCharacter(character);
       }
 
       // Save chapters
-      for (const chapter of story.chapters) {
+      for (const chapter of updatedStory.chapters) {
         await this.saveChapter(chapter);
       }
 
       await this.saveToFile();
+      return validation;
     } catch (error) {
       console.error('Failed to save story:', error);
       throw error;
