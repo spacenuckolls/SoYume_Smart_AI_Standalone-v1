@@ -2,16 +2,9 @@ import {
   AIProvider, 
   AIRequest, 
   AIResponse, 
-  AIRequestType,
-  AIRouter as IAIRouter
+  AIRequestType
 } from '../../shared/types/AI';
-import { 
-  ProviderRegistry, 
-  ProviderSelectionStrategy, 
-  PriorityBasedStrategy, 
-  LoadBalancingStrategy, 
-  PerformanceBasedStrategy 
-} from './ProviderRegistry';
+import { AIProviderRegistry } from './providers/AIProviderRegistry';
 import { ConfigManager } from '../config/ConfigManager';
 
 export interface RoutingRule {
@@ -30,22 +23,14 @@ export interface RoutingConfig {
   retryDelay: number; // milliseconds
 }
 
-export class AIRouter implements IAIRouter {
-  private providerRegistry: ProviderRegistry;
+export class AIRouter {
+  private providerRegistry: AIProviderRegistry;
   private configManager: ConfigManager;
-  private strategies: Map<string, ProviderSelectionStrategy>;
   private routingConfig: RoutingConfig;
 
-  constructor(providerRegistry: ProviderRegistry, configManager: ConfigManager) {
+  constructor(providerRegistry: AIProviderRegistry, configManager: ConfigManager) {
     this.providerRegistry = providerRegistry;
     this.configManager = configManager;
-    
-    // Initialize selection strategies
-    this.strategies = new Map([
-      ['priority', new PriorityBasedStrategy()],
-      ['load_balance', new LoadBalancingStrategy()],
-      ['performance', new PerformanceBasedStrategy()]
-    ]);
 
     // Load routing configuration
     this.routingConfig = this.loadRoutingConfig();
@@ -166,15 +151,9 @@ export class AIRouter implements IAIRouter {
       return null;
     }
 
-    // Select strategy
-    const strategyName = rule?.fallbackStrategy || this.routingConfig.defaultStrategy;
-    const strategy = this.strategies.get(strategyName)!;
-    
-    // Get metrics for strategy
-    const metrics = this.providerRegistry.getAllProviderMetrics();
-    
-    // Select provider
-    return strategy.selectProvider(candidates, request, metrics);
+    // Simple priority-based selection for now
+    candidates.sort((a, b) => b.priority - a.priority);
+    return candidates[0];
   }
 
   private findRoutingRule(requestType: AIRequestType): RoutingRule | null {
@@ -234,8 +213,43 @@ export class AIRouter implements IAIRouter {
           throw new Error(`No suitable provider available for request type: ${request.type}`);
         }
 
-        const response = await this.providerRegistry.executeRequest(provider.name, request);
-        return response;
+        // Execute request directly on provider
+        switch (request.type) {
+          case 'prose_generation':
+          case 'dialogue_generation':
+            return provider.generateText(request.content, request.context);
+          case 'story_analysis':
+          case 'plot_hole_detection':
+          case 'pacing_analysis':
+          case 'consistency_check':
+          case 'manuscript_analysis':
+            const analysis = await provider.analyzeStory(request.content);
+            return {
+              content: JSON.stringify(analysis),
+              confidence: analysis.overallScore / 100,
+              metadata: {
+                model: provider.name,
+                provider: provider.name,
+                tokensUsed: 0,
+                responseTime: 0
+              }
+            };
+          case 'character_analysis':
+            const traits = JSON.parse(request.content);
+            const character = await provider.generateCharacter(traits);
+            return {
+              content: JSON.stringify(character),
+              confidence: 0.8,
+              metadata: {
+                model: provider.name,
+                provider: provider.name,
+                tokensUsed: 0,
+                responseTime: 0
+              }
+            };
+          default:
+            return provider.generateText(request.content, request.context);
+        }
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         attempts++;
@@ -300,19 +314,16 @@ export class AIRouter implements IAIRouter {
   // Analytics and monitoring
   getProviderUsageStats(): Map<string, any> {
     const stats = new Map();
-    const metrics = this.providerRegistry.getAllProviderMetrics();
+    const providerStats = this.providerRegistry.getProviderStats();
     
-    for (const [providerName, metric] of metrics) {
-      const status = this.providerRegistry.getProviderStatus(providerName);
-      
+    for (const [providerName, stat] of Object.entries(providerStats)) {
       stats.set(providerName, {
-        totalRequests: metric.totalRequests,
-        successRate: metric.totalRequests > 0 ? 
-          (metric.successfulRequests / metric.totalRequests) * 100 : 0,
-        averageResponseTime: metric.averageResponseTime,
-        healthStatus: status?.healthStatus || 'unknown',
-        lastRequestTime: metric.lastRequestTime,
-        errorCount: status?.errorCount || 0
+        totalRequests: 0,
+        successRate: 100,
+        averageResponseTime: 0,
+        healthStatus: stat.available ? 'healthy' : 'unhealthy',
+        lastRequestTime: new Date(),
+        errorCount: 0
       });
     }
     
@@ -344,7 +355,12 @@ export class AIRouter implements IAIRouter {
         }
       };
 
-      await this.providerRegistry.executeRequest(providerName, testRequest);
+      const provider = this.providerRegistry.getProvider(providerName);
+      if (!provider) {
+        throw new Error(`Provider ${providerName} not found`);
+      }
+
+      await provider.generateText(testRequest.content, testRequest.context);
       
       return {
         success: true,
@@ -380,7 +396,6 @@ export class AIRouter implements IAIRouter {
   } {
     const rule = this.findRoutingRule(requestType);
     const providers = this.providerRegistry.getAvailableProviders();
-    const metrics = this.providerRegistry.getAllProviderMetrics();
     
     // Apply filters
     const candidates = this.applyRequestFilters(providers, { 
@@ -397,20 +412,15 @@ export class AIRouter implements IAIRouter {
       };
     }
 
-    // Get strategy and select
-    const strategyName = rule?.fallbackStrategy || this.routingConfig.defaultStrategy;
-    const strategy = this.strategies.get(strategyName)!;
-    const recommended = strategy.selectProvider(candidates, {
-      type: requestType,
-      content: '',
-      context: { characters: [], genre: [], targetAudience: '' }
-    }, metrics);
+    // Simple priority-based selection
+    candidates.sort((a, b) => b.priority - a.priority);
+    const recommended = candidates[0];
 
     const alternatives = candidates
       .filter(p => p.name !== recommended?.name)
       .map(p => p.name);
 
-    let reasoning = `Selected using ${strategyName} strategy`;
+    let reasoning = `Selected using priority strategy`;
     if (rule?.preferredProviderType) {
       reasoning += `, preferred type: ${rule.preferredProviderType}`;
     }

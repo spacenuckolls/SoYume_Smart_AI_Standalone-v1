@@ -12,7 +12,10 @@ import {
   ForeshadowingSuggestion,
   PacingAnalysis,
   StoryStructure,
-  CharacterTraits
+  CharacterTraits,
+  ProviderConfig,
+  ProviderMetadata,
+  HealthCheckResult
 } from '../../../shared/types/AI';
 import { 
   Story, 
@@ -24,12 +27,34 @@ import {
 import { BaseProvider } from './BaseProvider';
 import { StoryValidator } from '../../../shared/validation/StoryValidation';
 import { StoryUtils, CharacterUtils } from '../../../shared/utils/StoryUtils';
+import { BaseModelLoader, createModelLoader, ModelConfig, getDefaultModelConfig } from '../inference/ModelLoader';
+import { BaseTokenizer, createTokenizer, getDefaultTokenizerConfig } from '../inference/Tokenizer';
 
 // SoYume Co-writer AI Provider - specialized for creative writing
 export class CowriterProvider extends BaseProvider implements CowriterAI {
-  name = 'SoYume Co-writer';
-  type: 'cowriter' = 'cowriter';
-  priority = 10; // Highest priority for creative tasks
+  public readonly id = 'soyume-cowriter';
+  public readonly name = 'SoYume Co-writer';
+  public readonly type: 'cowriter' = 'cowriter';
+  public readonly version = '1.0.0';
+  public readonly priority = 10; // Highest priority for creative tasks
+  public readonly metadata: ProviderMetadata = {
+    description: 'Specialized AI trained for creative writing tasks including story analysis, character development, and narrative structure',
+    author: 'SoYume Team',
+    website: 'https://soyume.ai',
+    supportedLanguages: ['en', 'ja'],
+    modelInfo: {
+      name: 'SoYume Co-writer v1.0',
+      version: '1.0.0',
+      parameters: '8B',
+      contextWindow: 4096
+    },
+    requirements: {
+      minRAM: '8GB',
+      gpu: false,
+      internetRequired: false,
+      apiKeyRequired: false
+    }
+  };
   
   capabilities: AICapability[] = [
     {
@@ -90,75 +115,161 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
     }
   ];
 
-  private modelPath?: string;
-  private modelLoaded = false;
-  private inferenceEngine?: any; // Will hold ONNX.js or WebAssembly model
+  private modelLoader?: BaseModelLoader;
+  private tokenizer?: BaseTokenizer;
   private knowledgeBase: Map<string, any> = new Map();
-  private tokenizer?: any;
+  private modelConfig: ModelConfig;
 
-  protected async doInitialize(): Promise<void> {
-    this.modelPath = this.config.localPath || './models/soyume-cowriter';
+  protected async doInitialize(config: ProviderConfig): Promise<void> {
+    // Set up model configuration
+    this.modelConfig = {
+      ...getDefaultModelConfig(),
+      modelPath: config.localPath || './models/soyume-cowriter.onnx',
+      quantization: config.quantization || '8bit',
+      maxTokens: config.maxTokens || 2048,
+      contextWindow: config.contextWindow || 4096,
+      temperature: config.temperature || 0.7,
+      topP: config.topP || 0.9
+    };
     
     // Initialize knowledge base first
     await this.loadKnowledgeBase();
     
+    // Initialize tokenizer
+    await this.initializeTokenizer();
+    
     // Try to load the local model
     await this.loadLocalModel();
     
-    console.log(`Co-writer AI initialized with model path: ${this.modelPath}`);
+    console.log(`Co-writer AI initialized with model path: ${this.modelConfig.modelPath}`);
   }
 
   protected async doShutdown(): Promise<void> {
     // Cleanup model resources
-    if (this.inferenceEngine) {
-      // Cleanup ONNX.js or WebAssembly resources
-      this.inferenceEngine = null;
+    if (this.modelLoader) {
+      await this.modelLoader.unloadModel();
+      this.modelLoader = undefined;
     }
+    
+    this.tokenizer = undefined;
     this.knowledgeBase.clear();
-    this.modelLoaded = false;
     console.log('Co-writer AI shut down');
   }
 
-  protected async performHealthCheck(): Promise<void> {
-    // Test basic functionality
-    const testPrompt = 'Test prompt for health check';
-    const testContext: StoryContext = {
-      characters: [],
-      genre: ['fantasy'],
-      targetAudience: 'test'
+  protected async doUpdateConfig(config: ProviderConfig): Promise<void> {
+    // Update model configuration
+    const newModelConfig = {
+      ...this.modelConfig,
+      modelPath: config.localPath || this.modelConfig.modelPath,
+      quantization: config.quantization || this.modelConfig.quantization,
+      maxTokens: config.maxTokens || this.modelConfig.maxTokens,
+      temperature: config.temperature || this.modelConfig.temperature
     };
-    
-    await this.generateText(testPrompt, testContext);
+
+    // If model path changed, reload the model
+    if (newModelConfig.modelPath !== this.modelConfig.modelPath) {
+      if (this.modelLoader) {
+        await this.modelLoader.unloadModel();
+      }
+      this.modelConfig = newModelConfig;
+      await this.loadLocalModel();
+    } else {
+      // Just update the configuration
+      this.modelConfig = newModelConfig;
+      if (this.modelLoader) {
+        this.modelLoader.updateConfig(newModelConfig);
+      }
+    }
+
+    console.log('Co-writer AI configuration updated');
+  }
+
+  protected async doHealthCheck(): Promise<Omit<HealthCheckResult, 'responseTime'>> {
+    try {
+      // Check if model is loaded
+      const modelHealthy = this.modelLoader?.isModelLoaded() || false;
+      
+      // Check if tokenizer is available
+      const tokenizerHealthy = !!this.tokenizer;
+      
+      // Check if knowledge base is loaded
+      const knowledgeHealthy = this.knowledgeBase.size > 0;
+      
+      // Test basic functionality
+      const testPrompt = 'Test prompt for health check';
+      const testContext: StoryContext = {
+        characters: [],
+        genre: ['fantasy'],
+        targetAudience: 'test'
+      };
+      
+      const response = await this.generateText(testPrompt, testContext);
+      const functionalityHealthy = !!response.content;
+      
+      const healthy = modelHealthy && tokenizerHealthy && knowledgeHealthy && functionalityHealthy;
+      
+      return {
+        healthy,
+        details: {
+          model: modelHealthy,
+          tokenizer: tokenizerHealthy,
+          knowledgeBase: knowledgeHealthy,
+          functionality: functionalityHealthy
+        }
+      };
+    } catch (error) {
+      return {
+        healthy: false,
+        error: (error as Error).message
+      };
+    }
   }
 
   private async loadLocalModel(): Promise<void> {
     try {
-      // For now, we'll use a rule-based system until the actual model is trained
-      // In the future, this will load ONNX.js or WebAssembly model
+      // Create model loader
+      this.modelLoader = createModelLoader(this.modelConfig, 'onnx');
       
-      // Check if model files exist
-      const modelExists = await this.checkModelExists();
+      // Set up event handlers
+      this.modelLoader.on('loading-progress', (progress, stage) => {
+        console.log(`Model loading: ${progress}% - ${stage}`);
+      });
       
-      if (modelExists) {
-        // Load ONNX.js model (placeholder for future implementation)
-        // const ort = require('onnxruntime-node');
-        // this.inferenceEngine = await ort.InferenceSession.create(this.modelPath);
-        console.log('Local AI model would be loaded here (placeholder)');
-        this.modelLoaded = true;
-      } else {
-        console.log('Local AI model not found, using rule-based fallback');
-        this.modelLoaded = false;
-      }
+      this.modelLoader.on('loading-completed', (metadata) => {
+        console.log('Model loaded successfully:', metadata.name);
+      });
+      
+      this.modelLoader.on('loading-failed', (error) => {
+        console.warn('Model loading failed, using rule-based fallback:', error);
+      });
+      
+      // Attempt to load the model
+      await this.modelLoader.loadModel();
+      
+      console.log(`Co-writer AI model loaded: ${this.modelConfig.modelPath}`);
     } catch (error) {
       console.warn('Failed to load local AI model, using rule-based fallback:', error);
-      this.modelLoaded = false;
+      this.modelLoader = undefined;
     }
   }
 
-  private async checkModelExists(): Promise<boolean> {
-    // Check if model files exist at the specified path
-    // This is a placeholder - in real implementation would check file system
-    return false; // For now, always use rule-based system
+  private async initializeTokenizer(): Promise<void> {
+    try {
+      const tokenizerConfig = {
+        ...getDefaultTokenizerConfig(),
+        maxLength: this.modelConfig.contextWindow,
+        vocabSize: 50000
+      };
+      
+      // Create tokenizer (word-level for now, can be upgraded to BPE later)
+      this.tokenizer = createTokenizer('word', tokenizerConfig);
+      
+      console.log('Tokenizer initialized successfully');
+    } catch (error) {
+      console.warn('Failed to initialize tokenizer:', error);
+      // Create a basic fallback tokenizer
+      this.tokenizer = createTokenizer('word', getDefaultTokenizerConfig());
+    }
   }
 
   private async loadKnowledgeBase(): Promise<void> {
@@ -190,7 +301,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
     try {
       let content: string;
       
-      if (this.modelLoaded && this.inferenceEngine) {
+      if (this.modelLoader && this.modelLoader.isModelLoaded()) {
         // Use local AI model for generation
         content = await this.generateWithModel(prompt, context);
       } else {
@@ -200,13 +311,20 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
       
       const responseTime = Date.now() - startTime;
       
-      return this.createResponse(content, 0.85, {
-        responseTime,
-        generationMethod: this.modelLoaded ? 'model' : 'rules',
-        contextFactors: this.analyzeContext(context)
-      });
+      return {
+        content,
+        confidence: 0.85,
+        metadata: {
+          model: this.metadata.modelInfo?.name || 'SoYume Co-writer',
+          provider: this.name,
+          tokensUsed: this.estimateTokens(content),
+          responseTime,
+          generationMethod: this.modelLoader?.isModelLoaded() ? 'model' : 'rules',
+          contextFactors: this.analyzeContext(context)
+        }
+      };
     } catch (error) {
-      this.handleError(error, 'text generation');
+      throw this.createError('Text generation failed', 'GENERATION_ERROR', error);
     }
   }
 
@@ -246,7 +364,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
         recommendations
       };
     } catch (error) {
-      this.handleError(error, 'story analysis');
+      throw this.createError('Story analysis failed', 'ANALYSIS_ERROR', error);
     }
   }
 
@@ -263,7 +381,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
       
       return character;
     } catch (error) {
-      this.handleError(error, 'character generation');
+      throw this.createError('Character generation failed', 'CHARACTER_ERROR', error);
     }
   }
 
@@ -286,7 +404,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
       
       return outline;
     } catch (error) {
-      this.handleError(error, 'outline generation');
+      throw this.createError('Outline generation failed', 'OUTLINE_ERROR', error);
     }
   }
 
@@ -310,7 +428,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
         confidence: 0.8
       };
     } catch (error) {
-      this.handleError(error, 'manuscript analysis');
+      throw this.createError('Manuscript analysis failed', 'MANUSCRIPT_ERROR', error);
     }
   }
 
@@ -342,7 +460,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
         estimatedWordCount: context.targetWordCount || 1000
       };
     } catch (error) {
-      this.handleError(error, 'scene structure suggestion');
+      throw this.createError('Scene structure suggestion failed', 'SCENE_ERROR', error);
     }
   }
 
@@ -369,7 +487,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
         worldBuildingIssues: []
       };
     } catch (error) {
-      this.handleError(error, 'character consistency check');
+      throw this.createError('Character consistency check failed', 'CONSISTENCY_ERROR', error);
     }
   }
 
@@ -391,7 +509,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
       
       return issues;
     } catch (error) {
-      this.handleError(error, 'plot hole identification');
+      throw this.createError('Plot hole identification failed', 'PLOT_ERROR', error);
     }
   }
 
@@ -411,7 +529,7 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
       
       return suggestions;
     } catch (error) {
-      this.handleError(error, 'foreshadowing suggestions');
+      throw this.createError('Foreshadowing suggestions failed', 'FORESHADOWING_ERROR', error);
     }
   }
 
@@ -436,15 +554,109 @@ export class CowriterProvider extends BaseProvider implements CowriterAI {
         recommendations
       };
     } catch (error) {
-      this.handleError(error, 'pacing analysis');
+      throw this.createError('Pacing analysis failed', 'PACING_ERROR', error);
     }
   }
 
-  // Model-based generation (placeholder for future implementation)
+  // Model-based generation using loaded model
   private async generateWithModel(prompt: string, context: StoryContext): Promise<string> {
-    // This will use ONNX.js or WebAssembly for local inference
-    // For now, return a placeholder
-    return `[Model Generated] ${prompt}`;
+    if (!this.modelLoader || !this.modelLoader.isModelLoaded()) {
+      throw new Error('Model not loaded');
+    }
+    
+    if (!this.tokenizer) {
+      throw new Error('Tokenizer not available');
+    }
+    
+    try {
+      // Prepare the input with context
+      const contextualPrompt = this.buildContextualPrompt(prompt, context);
+      
+      // Tokenize the input
+      const tokenized = this.tokenizer.encode(contextualPrompt, true);
+      
+      // Prepare input for model inference
+      const modelInput = this.prepareModelInput(tokenized);
+      
+      // Run inference
+      const session = this.modelLoader.getSession();
+      const outputs = await session.run(modelInput);
+      
+      // Process outputs and decode
+      const generatedTokens = this.processModelOutput(outputs);
+      const generatedText = this.tokenizer.decode(generatedTokens, {
+        skipSpecialTokens: true,
+        cleanUpTokenizationSpaces: true
+      });
+      
+      // Post-process the generated text
+      return this.postProcessGeneration(generatedText, context);
+    } catch (error) {
+      console.warn('Model inference failed, falling back to rules:', error);
+      return this.generateWithRules(prompt, context);
+    }
+  }
+
+  private buildContextualPrompt(prompt: string, context: StoryContext): string {
+    let contextualPrompt = '';
+    
+    // Add genre context
+    if (context.genre && context.genre.length > 0) {
+      contextualPrompt += `Genre: ${context.genre.join(', ')}\n`;
+    }
+    
+    // Add audience context
+    if (context.targetAudience) {
+      contextualPrompt += `Target Audience: ${context.targetAudience}\n`;
+    }
+    
+    // Add character context
+    if (context.characters && context.characters.length > 0) {
+      contextualPrompt += `Characters: ${context.characters.map(c => c.name).join(', ')}\n`;
+    }
+    
+    contextualPrompt += `\nPrompt: ${prompt}\n\nResponse:`;
+    
+    return contextualPrompt;
+  }
+
+  private prepareModelInput(tokenized: any): any {
+    // Prepare input tensors for ONNX model
+    // This is a simplified version - real implementation would handle batching, attention masks, etc.
+    return {
+      input_ids: tokenized.tokens,
+      attention_mask: tokenized.attentionMask
+    };
+  }
+
+  private processModelOutput(outputs: any): number[] {
+    // Process model outputs to extract generated tokens
+    // This is a placeholder - real implementation would handle logits, sampling, etc.
+    return outputs.logits || [];
+  }
+
+  private postProcessGeneration(text: string, context: StoryContext): string {
+    // Clean up and enhance the generated text
+    let processed = text.trim();
+    
+    // Remove any incomplete sentences at the end
+    const sentences = processed.split(/[.!?]+/);
+    if (sentences.length > 1 && sentences[sentences.length - 1].trim().length < 10) {
+      sentences.pop();
+      processed = sentences.join('.') + '.';
+    }
+    
+    // Apply genre-specific post-processing
+    if (context.genre && context.genre.includes('fantasy')) {
+      processed = this.enhanceFantasyElements(processed);
+    }
+    
+    return processed;
+  }
+
+  private enhanceFantasyElements(text: string): string {
+    // Add fantasy-specific enhancements if needed
+    return text;
   }
 
   // Rule-based generation (current implementation)

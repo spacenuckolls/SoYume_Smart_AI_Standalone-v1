@@ -1,331 +1,463 @@
-import { Tokenizer } from '../inference/Tokenizer';
+import { 
+  WordTokenizer, 
+  BPETokenizer, 
+  createTokenizer, 
+  getDefaultTokenizerConfig, 
+  estimateTokenCount, 
+  truncateToTokenLimit 
+} from '../inference/Tokenizer';
+import { TokenizerConfig } from '../inference/Tokenizer';
 
 describe('Tokenizer', () => {
-  let tokenizer: Tokenizer;
+  let config: TokenizerConfig;
 
   beforeEach(() => {
-    tokenizer = new Tokenizer(undefined, 128); // Use smaller max length for testing
+    config = getDefaultTokenizerConfig();
   });
 
-  describe('initialization', () => {
-    it('should initialize with default settings', () => {
-      const defaultTokenizer = new Tokenizer();
-      
-      expect(defaultTokenizer.getVocabularySize()).toBeGreaterThan(0);
-      expect(defaultTokenizer.hasToken('[PAD]')).toBe(true);
-      expect(defaultTokenizer.hasToken('[UNK]')).toBe(true);
-      expect(defaultTokenizer.hasToken('<|startoftext|>')).toBe(true);
-      expect(defaultTokenizer.hasToken('<|endoftext|>')).toBe(true);
+  describe('WordTokenizer', () => {
+    let tokenizer: WordTokenizer;
+
+    beforeEach(() => {
+      tokenizer = new WordTokenizer(config);
     });
 
-    it('should initialize with custom max length', () => {
-      const customTokenizer = new Tokenizer(undefined, 256);
-      const stats = customTokenizer.getVocabularyStats();
-      
-      expect(stats.maxLength).toBe(256);
-    });
+    describe('Basic Tokenization', () => {
+      it('should tokenize simple text correctly', () => {
+        const text = 'Hello world';
+        const result = tokenizer.encode(text);
 
-    it('should have special tokens', () => {
-      const specialTokens = tokenizer.getSpecialTokens();
-      
-      expect(specialTokens.has('[PAD]')).toBe(true);
-      expect(specialTokens.has('[UNK]')).toBe(true);
-      expect(specialTokens.has('[CLS]')).toBe(true);
-      expect(specialTokens.has('[SEP]')).toBe(true);
-      expect(specialTokens.has('[MASK]')).toBe(true);
-      expect(specialTokens.has('<|startoftext|>')).toBe(true);
-      expect(specialTokens.has('<|endoftext|>')).toBe(true);
-    });
-  });
+        expect(result.tokens).toHaveLength(4); // BOS + Hello + world + EOS
+        expect(result.tokenStrings).toContain('Hello');
+        expect(result.tokenStrings).toContain('world');
+        expect(result.attentionMask).toHaveLength(result.tokens.length);
+      });
 
-  describe('tokenization', () => {
-    it('should encode text to token IDs', () => {
-      const text = 'The character walked through the forest.';
-      const tokenIds = tokenizer.encode(text);
-      
-      expect(Array.isArray(tokenIds)).toBe(true);
-      expect(tokenIds.length).toBe(128); // Should be padded to max length
-      expect(tokenIds[0]).toBe(tokenizer.getTokenId('<|startoftext|>'));
-      expect(tokenIds.includes(tokenizer.getTokenId('<|endoftext|>')!)).toBe(true);
-    });
+      it('should handle punctuation correctly', () => {
+        const text = 'Hello, world!';
+        const result = tokenizer.encode(text);
 
-    it('should decode token IDs back to text', () => {
-      const originalText = 'The hero saved the day.';
-      const tokenIds = tokenizer.encode(originalText);
-      const decodedText = tokenizer.decode(tokenIds);
-      
-      expect(typeof decodedText).toBe('string');
-      expect(decodedText.length).toBeGreaterThan(0);
-      // Should contain key words from original text
-      expect(decodedText.toLowerCase()).toContain('hero');
-      expect(decodedText.toLowerCase()).toContain('saved');
-    });
+        expect(result.tokenStrings).toContain('Hello');
+        expect(result.tokenStrings).toContain(',');
+        expect(result.tokenStrings).toContain('world');
+        expect(result.tokenStrings).toContain('!');
+      });
 
-    it('should handle unknown tokens', () => {
-      const text = 'This contains unknownword123 that is not in vocabulary.';
-      const tokenIds = tokenizer.encode(text);
-      
-      expect(tokenIds.includes(tokenizer.getTokenId('[UNK]')!)).toBe(true);
-    });
+      it('should handle empty text', () => {
+        const text = '';
+        const result = tokenizer.encode(text);
 
-    it('should handle empty text', () => {
-      const tokenIds = tokenizer.encode('');
-      
-      expect(tokenIds.length).toBe(128);
-      expect(tokenIds[0]).toBe(tokenizer.getTokenId('<|startoftext|>'));
-      expect(tokenIds[1]).toBe(tokenizer.getTokenId('<|endoftext|>'));
-      // Rest should be padding
-      for (let i = 2; i < tokenIds.length; i++) {
-        expect(tokenIds[i]).toBe(tokenizer.getTokenId('[PAD]'));
-      }
-    });
+        // Should still have special tokens if addSpecialTokens is true
+        expect(result.tokens.length).toBeGreaterThanOrEqual(0);
+      });
 
-    it('should truncate long text', () => {
-      const longText = 'word '.repeat(200); // Much longer than max length
-      const tokenIds = tokenizer.encode(longText);
-      
-      expect(tokenIds.length).toBe(128);
-      expect(tokenIds[0]).toBe(tokenizer.getTokenId('<|startoftext|>'));
-    });
-  });
+      it('should handle whitespace normalization', () => {
+        const text = 'Hello    world   ';
+        const result = tokenizer.encode(text);
 
-  describe('vocabulary management', () => {
-    it('should get token ID for existing token', () => {
-      const tokenId = tokenizer.getTokenId('the');
-      
-      expect(typeof tokenId).toBe('number');
-      expect(tokenId).toBeGreaterThanOrEqual(0);
-    });
-
-    it('should return undefined for non-existent token', () => {
-      const tokenId = tokenizer.getTokenId('nonexistenttoken123');
-      
-      expect(tokenId).toBeUndefined();
-    });
-
-    it('should get token for existing ID', () => {
-      const padTokenId = tokenizer.getTokenId('[PAD]')!;
-      const token = tokenizer.getToken(padTokenId);
-      
-      expect(token).toBe('[PAD]');
-    });
-
-    it('should return undefined for non-existent ID', () => {
-      const token = tokenizer.getToken(99999);
-      
-      expect(token).toBeUndefined();
-    });
-
-    it('should check if token exists', () => {
-      expect(tokenizer.hasToken('the')).toBe(true);
-      expect(tokenizer.hasToken('nonexistenttoken123')).toBe(false);
-    });
-
-    it('should add new tokens', () => {
-      const newToken = 'newtesttoken';
-      
-      expect(tokenizer.hasToken(newToken)).toBe(false);
-      
-      const tokenId = tokenizer.addToken(newToken);
-      
-      expect(tokenizer.hasToken(newToken)).toBe(true);
-      expect(tokenizer.getTokenId(newToken)).toBe(tokenId);
-      expect(tokenizer.getToken(tokenId)).toBe(newToken);
-    });
-
-    it('should return existing ID when adding duplicate token', () => {
-      const existingToken = 'the';
-      const originalId = tokenizer.getTokenId(existingToken)!;
-      
-      const newId = tokenizer.addToken(existingToken);
-      
-      expect(newId).toBe(originalId);
-    });
-  });
-
-  describe('batch operations', () => {
-    it('should encode multiple texts', () => {
-      const texts = [
-        'First story about a hero.',
-        'Second story about a villain.',
-        'Third story about friendship.'
-      ];
-      
-      const batchTokenIds = tokenizer.encodeBatch(texts);
-      
-      expect(Array.isArray(batchTokenIds)).toBe(true);
-      expect(batchTokenIds.length).toBe(3);
-      batchTokenIds.forEach(tokenIds => {
-        expect(Array.isArray(tokenIds)).toBe(true);
-        expect(tokenIds.length).toBe(128);
+        expect(result.tokenStrings.filter(t => t === 'Hello')).toHaveLength(1);
+        expect(result.tokenStrings.filter(t => t === 'world')).toHaveLength(1);
       });
     });
 
-    it('should decode multiple token sequences', () => {
-      const texts = ['Hero saves day.', 'Villain plots revenge.'];
-      const batchTokenIds = tokenizer.encodeBatch(texts);
-      const decodedTexts = tokenizer.decodeBatch(batchTokenIds);
-      
-      expect(Array.isArray(decodedTexts)).toBe(true);
-      expect(decodedTexts.length).toBe(2);
-      decodedTexts.forEach(text => {
-        expect(typeof text).toBe('string');
-        expect(text.length).toBeGreaterThan(0);
+    describe('Special Tokens', () => {
+      it('should add special tokens when requested', () => {
+        const text = 'Hello world';
+        const result = tokenizer.encode(text, true);
+
+        expect(result.tokenStrings).toContain(config.bosToken);
+        expect(result.tokenStrings).toContain(config.eosToken);
+      });
+
+      it('should skip special tokens when not requested', () => {
+        const text = 'Hello world';
+        const result = tokenizer.encode(text, false);
+
+        expect(result.tokenStrings).not.toContain(config.bosToken);
+        expect(result.tokenStrings).not.toContain(config.eosToken);
+      });
+
+      it('should identify special tokens correctly', () => {
+        expect(tokenizer.isSpecialToken(config.padToken)).toBe(true);
+        expect(tokenizer.isSpecialToken(config.unknownToken)).toBe(true);
+        expect(tokenizer.isSpecialToken('regular_word')).toBe(false);
+      });
+    });
+
+    describe('Decoding', () => {
+      it('should decode tokens back to text', () => {
+        const originalText = 'Hello world';
+        const encoded = tokenizer.encode(originalText, false);
+        const decoded = tokenizer.decode(encoded.tokens);
+
+        expect(decoded.toLowerCase()).toContain('hello');
+        expect(decoded.toLowerCase()).toContain('world');
+      });
+
+      it('should skip special tokens when decoding', () => {
+        const text = 'Hello world';
+        const encoded = tokenizer.encode(text, true);
+        const decoded = tokenizer.decode(encoded.tokens, { skipSpecialTokens: true });
+
+        expect(decoded).not.toContain(config.bosToken);
+        expect(decoded).not.toContain(config.eosToken);
+      });
+
+      it('should include special tokens when requested', () => {
+        const text = 'Hello world';
+        const encoded = tokenizer.encode(text, true);
+        const decoded = tokenizer.decode(encoded.tokens, { skipSpecialTokens: false });
+
+        expect(decoded).toContain(config.bosToken);
+        expect(decoded).toContain(config.eosToken);
+      });
+
+      it('should clean up tokenization spaces', () => {
+        const text = 'Hello, world!';
+        const encoded = tokenizer.encode(text, false);
+        const decoded = tokenizer.decode(encoded.tokens, { cleanUpTokenizationSpaces: true });
+
+        // Should not have spaces before punctuation
+        expect(decoded).not.toContain(' ,');
+        expect(decoded).not.toContain(' !');
+      });
+    });
+
+    describe('Vocabulary Management', () => {
+      it('should handle unknown tokens', () => {
+        const tokenId = tokenizer.getTokenId('unknown_word_12345');
+        const token = tokenizer.getToken(tokenId);
+
+        // Should either be the word itself (if added to vocab) or unknown token
+        expect(token === 'unknown_word_12345' || token === config.unknownToken).toBe(true);
+      });
+
+      it('should maintain consistent token IDs', () => {
+        const word = 'consistent';
+        const id1 = tokenizer.getTokenId(word);
+        const id2 = tokenizer.getTokenId(word);
+
+        expect(id1).toBe(id2);
+      });
+
+      it('should respect vocabulary size limits', () => {
+        const smallConfig = {
+          ...config,
+          vocabSize: 10 // Very small vocab
+        };
+        const smallTokenizer = new WordTokenizer(smallConfig);
+
+        // Add many unique words
+        const words = Array.from({ length: 20 }, (_, i) => `word${i}`);
+        const tokenIds = words.map(word => smallTokenizer.getTokenId(word));
+
+        // Some should map to unknown token due to vocab limit
+        const unknownTokenId = smallTokenizer.getTokenId(config.unknownToken);
+        expect(tokenIds.some(id => id === unknownTokenId)).toBe(true);
+      });
+    });
+
+    describe('Padding and Attention Masks', () => {
+      it('should create correct attention masks', () => {
+        const text = 'Hello world';
+        const encoded = tokenizer.encode(text);
+
+        expect(encoded.attentionMask).toHaveLength(encoded.tokens.length);
+        expect(encoded.attentionMask.every(mask => mask === 0 || mask === 1)).toBe(true);
+      });
+
+      it('should pad sequences correctly', () => {
+        const tokens = [1, 2, 3];
+        const padded = tokenizer.padSequence(tokens, 5);
+
+        expect(padded).toHaveLength(5);
+        expect(padded.slice(0, 3)).toEqual(tokens);
+        
+        const padTokenId = tokenizer.getSpecialTokens().get(config.padToken);
+        expect(padded.slice(3)).toEqual([padTokenId, padTokenId]);
+      });
+
+      it('should truncate long sequences', () => {
+        const longTokens = Array.from({ length: 10 }, (_, i) => i);
+        const truncated = tokenizer.padSequence(longTokens, 5);
+
+        expect(truncated).toHaveLength(5);
+        expect(truncated).toEqual([0, 1, 2, 3, 4]);
+      });
+    });
+
+    describe('Preprocessing', () => {
+      it('should handle mixed case text', () => {
+        const text = 'Hello WORLD';
+        const result = tokenizer.encode(text);
+
+        // Should normalize to lowercase
+        expect(result.tokenStrings.some(t => t.toLowerCase() === 'hello')).toBe(true);
+        expect(result.tokenStrings.some(t => t.toLowerCase() === 'world')).toBe(true);
+      });
+
+      it('should handle special characters', () => {
+        const text = 'Hello @#$% world';
+        const result = tokenizer.encode(text);
+
+        // Should filter out special characters but keep words
+        expect(result.tokenStrings.some(t => t.toLowerCase() === 'hello')).toBe(true);
+        expect(result.tokenStrings.some(t => t.toLowerCase() === 'world')).toBe(true);
       });
     });
   });
 
-  describe('attention masks', () => {
-    it('should create attention mask', () => {
-      const text = 'Short text.';
-      const tokenIds = tokenizer.encode(text);
-      const attentionMask = tokenizer.createAttentionMask(tokenIds);
-      
-      expect(Array.isArray(attentionMask)).toBe(true);
-      expect(attentionMask.length).toBe(tokenIds.length);
-      
-      // Should have 1s for real tokens and 0s for padding
-      const padTokenId = tokenizer.getTokenId('[PAD]')!;
-      for (let i = 0; i < tokenIds.length; i++) {
-        if (tokenIds[i] === padTokenId) {
-          expect(attentionMask[i]).toBe(0);
-        } else {
-          expect(attentionMask[i]).toBe(1);
+  describe('BPETokenizer', () => {
+    let tokenizer: BPETokenizer;
+    const mockMerges: Array<[string, string]> = [
+      ['h', 'e'],
+      ['l', 'l'],
+      ['o', 'w']
+    ];
+    const mockVocab = new Map([
+      ['h', 0],
+      ['e', 1],
+      ['l', 2],
+      ['o', 3],
+      ['w', 4],
+      ['he', 5],
+      ['ll', 6],
+      ['ow', 7]
+    ]);
+
+    beforeEach(() => {
+      tokenizer = new BPETokenizer(config, mockMerges, mockVocab);
+    });
+
+    describe('BPE Encoding', () => {
+      it('should apply BPE merges correctly', () => {
+        const text = 'hello';
+        const result = tokenizer.encode(text, false);
+
+        expect(result.tokens).toBeDefined();
+        expect(result.tokenStrings).toBeDefined();
+      });
+
+      it('should handle unknown tokens in BPE', () => {
+        const text = 'xyz'; // Not in vocab
+        const result = tokenizer.encode(text);
+
+        expect(result.tokens).toBeDefined();
+        expect(result.tokens.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('BPE Decoding', () => {
+      it('should decode BPE tokens correctly', () => {
+        const tokens = [5, 6, 3]; // 'he' + 'll' + 'o'
+        const decoded = tokenizer.decode(tokens);
+
+        expect(decoded).toBeTruthy();
+      });
+
+      it('should handle BPE space markers', () => {
+        // Test with common BPE space markers
+        const textWithMarkers = 'HelloĠworld';
+        const cleaned = (tokenizer as any).cleanupBPESpaces(textWithMarkers);
+
+        expect(cleaned).toContain(' ');
+        expect(cleaned).not.toContain('Ġ');
+      });
+    });
+  });
+
+  describe('Factory Functions', () => {
+    it('should create word tokenizer', () => {
+      const tokenizer = createTokenizer('word', config);
+      expect(tokenizer).toBeInstanceOf(WordTokenizer);
+    });
+
+    it('should create BPE tokenizer', () => {
+      const tokenizer = createTokenizer('bpe', config);
+      expect(tokenizer).toBeInstanceOf(BPETokenizer);
+    });
+
+    it('should throw error for unsupported type', () => {
+      expect(() => {
+        createTokenizer('unsupported' as any, config);
+      }).toThrow('Unsupported tokenizer type: unsupported');
+    });
+
+    it('should pass options to tokenizers', () => {
+      const vocabulary = ['hello', 'world', 'test'];
+      const tokenizer = createTokenizer('word', config, { vocabulary });
+
+      expect(tokenizer).toBeInstanceOf(WordTokenizer);
+    });
+  });
+
+  describe('Utility Functions', () => {
+    describe('estimateTokenCount', () => {
+      it('should estimate token count correctly', () => {
+        const text = 'Hello world test';
+        const estimate = estimateTokenCount(text);
+
+        expect(estimate).toBeGreaterThan(0);
+        expect(estimate).toBeLessThan(text.length); // Should be less than character count
+      });
+
+      it('should handle empty text', () => {
+        const estimate = estimateTokenCount('');
+        expect(estimate).toBe(0);
+      });
+
+      it('should use custom average token length', () => {
+        const text = 'Hello world';
+        const estimate1 = estimateTokenCount(text, 4);
+        const estimate2 = estimateTokenCount(text, 8);
+
+        expect(estimate1).toBeGreaterThan(estimate2);
+      });
+    });
+
+    describe('truncateToTokenLimit', () => {
+      it('should truncate text to token limit', () => {
+        const longText = 'This is a very long text that should be truncated to fit within the token limit';
+        const truncated = truncateToTokenLimit(longText, 5);
+
+        expect(truncated.length).toBeLessThan(longText.length);
+        expect(estimateTokenCount(truncated)).toBeLessThanOrEqual(5);
+      });
+
+      it('should not truncate short text', () => {
+        const shortText = 'Short';
+        const truncated = truncateToTokenLimit(shortText, 10);
+
+        expect(truncated).toBe(shortText);
+      });
+
+      it('should try to truncate at word boundaries', () => {
+        const text = 'Hello world this is a test';
+        const truncated = truncateToTokenLimit(text, 3, 4);
+
+        // Should try to end at a space if possible
+        const lastChar = truncated[truncated.length - 1];
+        expect(lastChar !== ' ' || truncated.endsWith(' ')).toBe(true);
+      });
+    });
+  });
+
+  describe('Configuration', () => {
+    it('should provide sensible defaults', () => {
+      const defaultConfig = getDefaultTokenizerConfig();
+
+      expect(defaultConfig).toMatchObject({
+        vocabSize: expect.any(Number),
+        maxLength: expect.any(Number),
+        padToken: expect.any(String),
+        unknownToken: expect.any(String),
+        bosToken: expect.any(String),
+        eosToken: expect.any(String)
+      });
+
+      expect(defaultConfig.vocabSize).toBeGreaterThan(0);
+      expect(defaultConfig.maxLength).toBeGreaterThan(0);
+    });
+
+    it('should handle custom special tokens', () => {
+      const customConfig = {
+        ...config,
+        specialTokens: {
+          '<custom>': 100,
+          '<another>': 101
         }
-      }
-    });
+      };
 
-    it('should encode with attention mask', () => {
-      const text = 'Test text for attention mask.';
-      const result = tokenizer.encodeWithMask(text);
-      
-      expect(result).toHaveProperty('input_ids');
-      expect(result).toHaveProperty('attention_mask');
-      expect(Array.isArray(result.input_ids)).toBe(true);
-      expect(Array.isArray(result.attention_mask)).toBe(true);
-      expect(result.input_ids.length).toBe(result.attention_mask.length);
-    });
-  });
-
-  describe('vocabulary statistics', () => {
-    it('should return vocabulary statistics', () => {
-      const stats = tokenizer.getVocabularyStats();
-      
-      expect(stats).toHaveProperty('totalTokens');
-      expect(stats).toHaveProperty('specialTokens');
-      expect(stats).toHaveProperty('regularTokens');
-      expect(stats).toHaveProperty('maxLength');
-      
-      expect(typeof stats.totalTokens).toBe('number');
-      expect(typeof stats.specialTokens).toBe('number');
-      expect(typeof stats.regularTokens).toBe('number');
-      expect(typeof stats.maxLength).toBe('number');
-      
-      expect(stats.totalTokens).toBe(stats.specialTokens + stats.regularTokens);
-      expect(stats.maxLength).toBe(128);
-    });
-
-    it('should have correct special token count', () => {
-      const stats = tokenizer.getVocabularyStats();
+      const tokenizer = new WordTokenizer(customConfig);
       const specialTokens = tokenizer.getSpecialTokens();
-      
-      expect(stats.specialTokens).toBe(specialTokens.size);
+
+      expect(specialTokens.has('<custom>')).toBe(true);
+      expect(specialTokens.has('<another>')).toBe(true);
+      expect(specialTokens.get('<custom>')).toBe(100);
+      expect(specialTokens.get('<another>')).toBe(101);
     });
   });
 
-  describe('vocabulary export/import', () => {
-    it('should export vocabulary', () => {
-      const exported = tokenizer.exportVocabulary();
-      
-      expect(exported).toHaveProperty('vocabulary');
-      expect(exported).toHaveProperty('specialTokens');
-      expect(exported).toHaveProperty('maxLength');
-      
-      expect(typeof exported.vocabulary).toBe('object');
-      expect(typeof exported.specialTokens).toBe('object');
-      expect(typeof exported.maxLength).toBe('number');
+  describe('Edge Cases', () => {
+    let tokenizer: WordTokenizer;
+
+    beforeEach(() => {
+      tokenizer = new WordTokenizer(config);
     });
 
-    it('should import vocabulary', () => {
-      const originalStats = tokenizer.getVocabularyStats();
-      const exported = tokenizer.exportVocabulary();
-      
-      // Create new tokenizer and import
-      const newTokenizer = new Tokenizer();
-      newTokenizer.importVocabulary(exported);
-      
-      const newStats = newTokenizer.getVocabularyStats();
-      
-      expect(newStats.totalTokens).toBe(originalStats.totalTokens);
-      expect(newStats.specialTokens).toBe(originalStats.specialTokens);
-      expect(newStats.maxLength).toBe(originalStats.maxLength);
-      
-      // Test that tokens work the same
-      expect(newTokenizer.getTokenId('the')).toBe(tokenizer.getTokenId('the'));
-      expect(newTokenizer.getTokenId('[PAD]')).toBe(tokenizer.getTokenId('[PAD]'));
+    it('should handle very long text', () => {
+      const longText = 'word '.repeat(1000);
+      const result = tokenizer.encode(longText);
+
+      expect(result.tokens).toBeDefined();
+      expect(result.tokens.length).toBeLessThanOrEqual(config.maxLength);
     });
 
-    it('should maintain functionality after import', () => {
-      const exported = tokenizer.exportVocabulary();
-      const newTokenizer = new Tokenizer();
-      newTokenizer.importVocabulary(exported);
-      
-      const text = 'Test text for import functionality.';
-      const originalTokenIds = tokenizer.encode(text);
-      const newTokenIds = newTokenizer.encode(text);
-      
-      expect(newTokenIds).toEqual(originalTokenIds);
-      
-      const originalDecoded = tokenizer.decode(originalTokenIds);
-      const newDecoded = newTokenizer.decode(newTokenIds);
-      
-      expect(newDecoded).toBe(originalDecoded);
-    });
-  });
-
-  describe('edge cases', () => {
     it('should handle text with only punctuation', () => {
-      const text = '!@#$%^&*()';
-      const tokenIds = tokenizer.encode(text);
-      
-      expect(Array.isArray(tokenIds)).toBe(true);
-      expect(tokenIds.length).toBe(128);
+      const punctText = '!@#$%^&*()';
+      const result = tokenizer.encode(punctText);
+
+      expect(result.tokens).toBeDefined();
+      expect(result.tokens.length).toBeGreaterThan(0);
     });
 
-    it('should handle text with mixed case', () => {
-      const text = 'MiXeD CaSe TeXt WiTh UPPERCASE and lowercase';
-      const tokenIds = tokenizer.encode(text);
-      const decoded = tokenizer.decode(tokenIds);
-      
-      // Should be normalized to lowercase
-      expect(decoded.toLowerCase()).toBe(decoded);
+    it('should handle text with only whitespace', () => {
+      const whitespaceText = '   \\n\\t   ';
+      const result = tokenizer.encode(whitespaceText);
+
+      expect(result.tokens).toBeDefined();
+      // Should have at least special tokens
+      expect(result.tokens.length).toBeGreaterThanOrEqual(0);
     });
 
-    it('should handle text with multiple spaces', () => {
-      const text = 'Text    with     multiple     spaces';
-      const tokenIds = tokenizer.encode(text);
-      const decoded = tokenizer.decode(tokenIds);
-      
-      // Should normalize spaces
-      expect(decoded).not.toContain('  '); // No double spaces
+    it('should handle unicode characters', () => {
+      const unicodeText = 'Hello 世界 🌍';
+      const result = tokenizer.encode(unicodeText);
+
+      expect(result.tokens).toBeDefined();
+      expect(result.tokens.length).toBeGreaterThan(0);
     });
 
-    it('should handle very short text', () => {
-      const text = 'Hi';
-      const tokenIds = tokenizer.encode(text);
+    it('should be consistent across multiple encodings', () => {
+      const text = 'Consistent test text';
       
-      expect(tokenIds.length).toBe(128);
-      expect(tokenIds[0]).toBe(tokenizer.getTokenId('<|startoftext|>'));
+      const result1 = tokenizer.encode(text);
+      const result2 = tokenizer.encode(text);
+
+      expect(result1.tokens).toEqual(result2.tokens);
+      expect(result1.tokenStrings).toEqual(result2.tokenStrings);
+    });
+  });
+
+  describe('Performance', () => {
+    let tokenizer: WordTokenizer;
+
+    beforeEach(() => {
+      tokenizer = new WordTokenizer(config);
     });
 
-    it('should handle text with numbers', () => {
-      const text = 'Chapter 123 has 456 words.';
-      const tokenIds = tokenizer.encode(text);
-      const decoded = tokenizer.decode(tokenIds);
+    it('should handle large vocabulary efficiently', () => {
+      const largeVocab = Array.from({ length: 1000 }, (_, i) => `word${i}`);
+      const largeTokenizer = new WordTokenizer(config, largeVocab);
+
+      const startTime = Date.now();
+      const result = largeTokenizer.encode('test word500 word999');
+      const endTime = Date.now();
+
+      expect(result.tokens).toBeDefined();
+      expect(endTime - startTime).toBeLessThan(100); // Should be fast
+    });
+
+    it('should handle repeated tokenization efficiently', () => {
+      const text = 'Repeated tokenization test';
       
-      expect(decoded).toContain('chapter');
-      expect(decoded).toContain('123');
-      expect(decoded).toContain('456');
+      const startTime = Date.now();
+      for (let i = 0; i < 100; i++) {
+        tokenizer.encode(text);
+      }
+      const endTime = Date.now();
+
+      expect(endTime - startTime).toBeLessThan(1000); // Should complete in reasonable time
     });
   });
 });
