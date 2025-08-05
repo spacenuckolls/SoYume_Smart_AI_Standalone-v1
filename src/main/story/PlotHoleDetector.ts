@@ -48,7 +48,7 @@ export interface PlotThreadTracker {
   introduced: number; // Scene index
   resolved?: number; // Scene index
   status: 'active' | 'resolved' | 'abandoned' | 'forgotten';
-  importance: 'major' | 'minor' | 'subplot';
+  importance: 'minor' | 'major' | 'critical';
   relatedCharacters: string[];
   keyScenes: number[];
 }
@@ -60,28 +60,28 @@ export class PlotHoleDetector {
   private timelineEvents: TimelineEvent[] = [];
 
   async analyzeStoryForPlotHoles(story: Story): Promise<PlotHoleAnalysisResult> {
-    // Initialize tracking systems
-    await this.initializeTrackers(story);
+    // Initialize tracking structures
+    this.initializeTracking(story);
     
-    // Analyze each scene sequentially
-    const scenes = story.scenes || [];
-    for (let i = 0; i < scenes.length; i++) {
-      await this.analyzeScene(scenes[i], i, story);
+    // Analyze each scene
+    for (let i = 0; i < (story.scenes || []).length; i++) {
+      await this.analyzeScene(story.scenes![i], i, story);
     }
     
-    // Detect plot holes and inconsistencies
+    // Detect issues
     const plotHoles = await this.detectPlotHoles();
-    const plotThreads = Array.from(this.plotThreads.values()).map(this.convertToPlotThread);
     const continuityIssues = await this.detectContinuityIssues();
     const characterInconsistencies = await this.detectCharacterInconsistencies();
+    
+    // Generate suggestions
     const suggestions = await this.generateSuggestions(plotHoles, continuityIssues, characterInconsistencies);
     
-    // Calculate overall story consistency score
+    // Calculate overall score
     const overallScore = this.calculateConsistencyScore(plotHoles, continuityIssues, characterInconsistencies);
     
     return {
       plotHoles,
-      plotThreads,
+      plotThreads: Array.from(this.plotThreads.values()).map(t => this.convertToPlotThread(t)),
       continuityIssues,
       characterInconsistencies,
       suggestions,
@@ -89,53 +89,795 @@ export class PlotHoleDetector {
     };
   }
 
-  private async initializeTrackers(story: Story): Promise<void> {
-    // Initialize character trackers
-    const characters = story.characters || [];
-    for (const character of characters) {
+  private initializeTracking(story: Story): void {
+    // Initialize character state tracking
+    for (const character of story.characters || []) {
       this.characterStates.set(character.id, new CharacterStateTracker(character));
     }
     
-    // Initialize world element trackers
-    await this.initializeWorldElements(story);
+    // Initialize world element tracking
+    const worldElements = this.extractWorldElements(story);
+    for (const element of worldElements) {
+      this.worldElements.set(element, new WorldElementTracker(element));
+    }
     
-    // Clear previous analysis data
+    // Clear previous analysis
     this.plotThreads.clear();
     this.timelineEvents = [];
   }
 
-  private async initializeWorldElements(story: Story): Promise<void> {
-    // Extract world elements from story metadata and scenes
-    const worldElements = new Set<string>();
+  private extractWorldElements(story: Story): string[] {
+    // Extract important world elements from story metadata and scenes
+    const elements: Set<string> = new Set();
     
-    // Add elements from story settings
-    if (story.setting) {
-      worldElements.add(story.setting);
+    // Add elements from story metadata
+    if (story.worldBuilding) {
+      for (const location of story.worldBuilding.locations || []) {
+        elements.add(location.name);
+      }
+      for (const item of story.worldBuilding.items || []) {
+        elements.add(item.name);
+      }
     }
     
-    // Extract elements from scenes
-    const scenes = story.scenes || [];
-    for (const scene of scenes) {
-      const elements = await this.extractWorldElements(scene);
-      elements.forEach(element => worldElements.add(element));
+    // Add frequently mentioned elements from scenes
+    const wordCounts: Map<string, number> = new Map();
+    for (const scene of story.scenes || []) {
+      const words = (scene.content || '').toLowerCase().split(/\s+/);
+      for (const word of words) {
+        if (word.length > 3) { // Only consider longer words
+          wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+        }
+      }
     }
     
-    // Initialize trackers for each world element
-    for (const element of worldElements) {
-      this.worldElements.set(element, new WorldElementTracker(element));
+    // Add words that appear frequently (potential world elements)
+    for (const [word, count] of wordCounts) {
+      if (count >= 3) { // Appears in multiple scenes
+        elements.add(word);
+      }
+    }
+    
+    return Array.from(elements);
+  }
+
+  private async analyzeScene(scene: Scene, sceneIndex: number, story: Story): Promise<void> {
+    const content = scene.content || '';
+    
+    // Track plot threads
+    await this.trackPlotThreads(scene, sceneIndex, content);
+    
+    // Update character states
+    await this.updateCharacterStates(scene, sceneIndex, content, story.characters || []);
+    
+    // Track world elements
+    await this.trackWorldElements(scene, sceneIndex, content);
+    
+    // Record timeline events
+    await this.recordTimelineEvents(scene, sceneIndex, content);
+  }
+
+  private async trackPlotThreads(scene: Scene, sceneIndex: number, content: string): Promise<void> {
+    // Detect new plot threads being introduced
+    const newThreads = await this.detectNewPlotThreads(content, sceneIndex);
+    for (const thread of newThreads) {
+      this.plotThreads.set(thread.id, thread);
+    }
+    
+    // Update existing plot threads
+    for (const [threadId, thread] of this.plotThreads) {
+      const isReferenced = await this.isPlotThreadReferenced(content, thread);
+      if (isReferenced) {
+        thread.keyScenes.push(sceneIndex);
+        
+        // Check if thread is being resolved
+        const isResolved = await this.isPlotThreadResolved(content, thread);
+        if (isResolved && thread.status === 'active') {
+          thread.resolved = sceneIndex;
+          thread.status = 'resolved';
+        }
+      }
     }
   }
 
-  private async extractWorldElements(scene: Scene): Promise<string[]> {
-    const content = scene.content || '';
-    const elements: string[] = [];
+  private async detectNewPlotThreads(content: string, sceneIndex: number): Promise<PlotThreadTracker[]> {
+    const threads: PlotThreadTracker[] = [];
     
-    // Extract locations
-    const locationPatterns = [
-      /(?:in|at|to|from)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-      /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:building|house|room|city|town|forest|mountain)/g
+    // Detect mystery/question introductions
+    const mysteryPatterns = [
+      /(?:what|who|why|how|where|when)\s+(?:is|was|did|happened|caused)/gi,
+      /(?:mystery|secret|hidden|unknown|missing)/gi,
+      /(?:must find|need to discover|have to learn)/gi
     ];
     
-    for (const pattern of locationPatterns) {
+    for (const pattern of mysteryPatterns) {
+      const matches = content.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const threadId = `mystery_${sceneIndex}_${threads.length}`;
+          threads.push({
+            id: threadId,
+            name: `Mystery: ${match}`,
+            description: `Plot thread introduced in scene ${sceneIndex}: ${match}`,
+            introduced: sceneIndex,
+            status: 'active',
+            importance: 'major',
+            relatedCharacters: [],
+            keyScenes: [sceneIndex]
+          });
+        }
+      }
+    }
+    
+    // Detect conflict introductions
+    const conflictPatterns = [
+      /(?:conflict|fight|battle|war|struggle|oppose)/gi,
+      /(?:enemy|villain|antagonist|rival)/gi,
+      /(?:must stop|have to prevent|need to defeat)/gi
+    ];
+    
+    for (const pattern of conflictPatterns) {
+      const matches = content.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const threadId = `conflict_${sceneIndex}_${threads.length}`;
+          threads.push({
+            id: threadId,
+            name: `Conflict: ${match}`,
+            description: `Conflict thread introduced in scene ${sceneIndex}: ${match}`,
+            introduced: sceneIndex,
+            status: 'active',
+            importance: 'major',
+            relatedCharacters: [],
+            keyScenes: [sceneIndex]
+          });
+        }
+      }
+    }
+    
+    return threads;
+  }
+
+  private async isPlotThreadReferenced(content: string, thread: PlotThreadTracker): Promise<boolean> {
+    const threadKeywords = thread.name.toLowerCase().split(/\s+/);
+    const contentLower = content.toLowerCase();
+    
+    // Check if any thread keywords appear in the content
+    return threadKeywords.some(keyword => contentLower.includes(keyword));
+  }
+
+  private async isPlotThreadResolved(content: string, thread: PlotThreadTracker): Promise<boolean> {
+    const resolutionPatterns = [
+      /(?:solved|resolved|answered|discovered|found|defeated|stopped)/gi,
+      /(?:finally|at last|in the end|ultimately)/gi,
+      /(?:mystery.*solved|question.*answered|conflict.*resolved)/gi
+    ];
+    
+    for (const pattern of resolutionPatterns) {
+      if (pattern.test(content)) {
+        // Check if the resolution relates to this thread
+        const threadKeywords = thread.name.toLowerCase().split(/\s+/);
+        const contentLower = content.toLowerCase();
+        
+        if (threadKeywords.some(keyword => contentLower.includes(keyword))) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  private async updateCharacterStates(scene: Scene, sceneIndex: number, content: string, characters: Character[]): Promise<void> {
+    for (const character of characters) {
+      const tracker = this.characterStates.get(character.id);
+      if (!tracker) continue;
+      
+      // Check if character is present in scene
+      const isPresent = await this.isCharacterPresent(content, character);
+      if (isPresent) {
+        tracker.recordPresence(sceneIndex);
+        
+        // Update character knowledge
+        await this.updateCharacterKnowledge(tracker, content, sceneIndex);
+        
+        // Update character abilities
+        await this.updateCharacterAbilities(tracker, content, sceneIndex);
+        
+        // Update character relationships
+        await this.updateCharacterRelationships(tracker, content, sceneIndex, characters);
+      }
+    }
+  }
+
+  private async isCharacterPresent(content: string, character: Character): Promise<boolean> {
+    const names = [character.name, ...(character.aliases || [])];
+    const contentLower = content.toLowerCase();
+    
+    return names.some(name => contentLower.includes(name.toLowerCase()));
+  }
+
+  private async updateCharacterKnowledge(tracker: CharacterStateTracker, content: string, sceneIndex: number): Promise<void> {
+    // Detect knowledge acquisition patterns
+    const knowledgePatterns = [
+      /(?:learned|discovered|found out|realized|understood)\s+(?:that\s+)?([^.!?]+)/gi,
+      /(?:knows|aware|informed)\s+(?:that\s+)?([^.!?]+)/gi
+    ];
+    
+    for (const pattern of knowledgePatterns) {
       let match;
-      while ((match = pattern.exec(content)) !== null) {\n        elements.push(match[1]);\n      }\n    }\n    \n    // Extract objects and artifacts\n    const objectPatterns = [\n      /\\b(?:the\\s+)?([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)\\s+(?:sword|ring|book|scroll|artifact|weapon|tool)/g,\n      /\\b(?:magic|magical|enchanted|cursed)\\s+([a-z]+(?:\\s+[a-z]+)*)/g\n    ];\n    \n    for (const pattern of objectPatterns) {\n      let match;\n      while ((match = pattern.exec(content)) !== null) {\n        elements.push(match[1]);\n      }\n    }\n    \n    return elements;\n  }\n\n  private async analyzeScene(scene: Scene, sceneIndex: number, story: Story): Promise<void> {\n    const content = scene.content || '';\n    \n    // Track plot threads\n    await this.trackPlotThreads(scene, sceneIndex, content);\n    \n    // Update character states\n    await this.updateCharacterStates(scene, sceneIndex, content, story.characters || []);\n    \n    // Track world elements\n    await this.trackWorldElements(scene, sceneIndex, content);\n    \n    // Record timeline events\n    await this.recordTimelineEvents(scene, sceneIndex, content);\n  }\n\n  private async trackPlotThreads(scene: Scene, sceneIndex: number, content: string): Promise<void> {\n    // Detect new plot threads being introduced\n    const newThreads = await this.detectNewPlotThreads(content, sceneIndex);\n    for (const thread of newThreads) {\n      this.plotThreads.set(thread.id, thread);\n    }\n    \n    // Update existing plot threads\n    for (const [threadId, thread] of this.plotThreads) {\n      const isReferenced = await this.isPlotThreadReferenced(content, thread);\n      if (isReferenced) {\n        thread.keyScenes.push(sceneIndex);\n        \n        // Check if thread is being resolved\n        const isResolved = await this.isPlotThreadResolved(content, thread);\n        if (isResolved && thread.status === 'active') {\n          thread.resolved = sceneIndex;\n          thread.status = 'resolved';\n        }\n      }\n    }\n  }\n\n  private async detectNewPlotThreads(content: string, sceneIndex: number): Promise<PlotThreadTracker[]> {\n    const threads: PlotThreadTracker[] = [];\n    \n    // Detect mystery/question introductions\n    const mysteryPatterns = [\n      /(?:what|who|why|how|where|when)\\s+(?:is|was|did|happened|caused)/gi,\n      /(?:mystery|secret|hidden|unknown|missing)/gi,\n      /(?:must find|need to discover|have to learn)/gi\n    ];\n    \n    for (const pattern of mysteryPatterns) {\n      const matches = content.match(pattern);\n      if (matches) {\n        for (const match of matches) {\n          const threadId = `mystery_${sceneIndex}_${threads.length}`;\n          threads.push({\n            id: threadId,\n            name: `Mystery: ${match}`,\n            description: `Plot thread introduced in scene ${sceneIndex}: ${match}`,\n            introduced: sceneIndex,\n            status: 'active',\n            importance: 'major',\n            relatedCharacters: [],\n            keyScenes: [sceneIndex]\n          });\n        }\n      }\n    }\n    \n    // Detect conflict introductions\n    const conflictPatterns = [\n      /(?:conflict|fight|battle|war|struggle|oppose)/gi,\n      /(?:enemy|villain|antagonist|rival)/gi,\n      /(?:must stop|have to prevent|need to defeat)/gi\n    ];\n    \n    for (const pattern of conflictPatterns) {\n      const matches = content.match(pattern);\n      if (matches) {\n        for (const match of matches) {\n          const threadId = `conflict_${sceneIndex}_${threads.length}`;\n          threads.push({\n            id: threadId,\n            name: `Conflict: ${match}`,\n            description: `Conflict thread introduced in scene ${sceneIndex}: ${match}`,\n            introduced: sceneIndex,\n            status: 'active',\n            importance: 'major',\n            relatedCharacters: [],\n            keyScenes: [sceneIndex]\n          });\n        }\n      }\n    }\n    \n    return threads;\n  }\n\n  private async isPlotThreadReferenced(content: string, thread: PlotThreadTracker): Promise<boolean> {\n    const threadKeywords = thread.name.toLowerCase().split(/\\s+/);\n    const contentLower = content.toLowerCase();\n    \n    // Check if any thread keywords appear in the content\n    return threadKeywords.some(keyword => contentLower.includes(keyword));\n  }\n\n  private async isPlotThreadResolved(content: string, thread: PlotThreadTracker): Promise<boolean> {\n    const resolutionPatterns = [\n      /(?:solved|resolved|answered|discovered|found|defeated|stopped)/gi,\n      /(?:finally|at last|in the end|ultimately)/gi,\n      /(?:mystery.*solved|question.*answered|conflict.*resolved)/gi\n    ];\n    \n    for (const pattern of resolutionPatterns) {\n      if (pattern.test(content)) {\n        // Check if the resolution relates to this thread\n        const threadKeywords = thread.name.toLowerCase().split(/\\s+/);\n        const contentLower = content.toLowerCase();\n        \n        if (threadKeywords.some(keyword => contentLower.includes(keyword))) {\n          return true;\n        }\n      }\n    }\n    \n    return false;\n  }\n\n  private async updateCharacterStates(scene: Scene, sceneIndex: number, content: string, characters: Character[]): Promise<void> {\n    for (const character of characters) {\n      const tracker = this.characterStates.get(character.id);\n      if (!tracker) continue;\n      \n      // Check if character is present in scene\n      const isPresent = await this.isCharacterPresent(content, character);\n      if (isPresent) {\n        tracker.recordPresence(sceneIndex);\n        \n        // Update character knowledge\n        await this.updateCharacterKnowledge(tracker, content, sceneIndex);\n        \n        // Update character abilities\n        await this.updateCharacterAbilities(tracker, content, sceneIndex);\n        \n        // Update character relationships\n        await this.updateCharacterRelationships(tracker, content, sceneIndex, characters);\n      }\n    }\n  }\n\n  private async isCharacterPresent(content: string, character: Character): Promise<boolean> {\n    const names = [character.name, ...(character.aliases || [])];\n    const contentLower = content.toLowerCase();\n    \n    return names.some(name => contentLower.includes(name.toLowerCase()));\n  }\n\n  private async updateCharacterKnowledge(tracker: CharacterStateTracker, content: string, sceneIndex: number): Promise<void> {\n    // Detect knowledge acquisition patterns\n    const knowledgePatterns = [\n      /(?:learned|discovered|found out|realized|understood)\\s+(?:that\\s+)?([^.!?]+)/gi,\n      /(?:knows|aware|informed)\\s+(?:that\\s+)?([^.!?]+)/gi\n    ];\n    \n    for (const pattern of knowledgePatterns) {\n      let match;\n      while ((match = pattern.exec(content)) !== null) {\n        tracker.addKnowledge(match[1].trim(), sceneIndex);\n      }\n    }\n  }\n\n  private async updateCharacterAbilities(tracker: CharacterStateTracker, content: string, sceneIndex: number): Promise<void> {\n    // Detect ability demonstrations or acquisitions\n    const abilityPatterns = [\n      /(?:can|able to|capable of)\\s+([^.!?]+)/gi,\n      /(?:learned to|mastered|gained the ability)\\s+([^.!?]+)/gi,\n      /(?:cast|performed|used)\\s+([^.!?]+)/gi\n    ];\n    \n    for (const pattern of abilityPatterns) {\n      let match;\n      while ((match = pattern.exec(content)) !== null) {\n        tracker.addAbility(match[1].trim(), sceneIndex);\n      }\n    }\n  }\n\n  private async updateCharacterRelationships(tracker: CharacterStateTracker, content: string, sceneIndex: number, characters: Character[]): Promise<void> {\n    // Detect relationship changes\n    const relationshipPatterns = [\n      /(?:loves|hates|trusts|distrusts|befriends|betrays)\\s+([A-Z][a-z]+)/gi,\n      /(?:ally|enemy|friend|rival)\\s+(?:of\\s+)?([A-Z][a-z]+)/gi\n    ];\n    \n    for (const pattern of relationshipPatterns) {\n      let match;\n      while ((match = pattern.exec(content)) !== null) {\n        const otherCharacterName = match[1];\n        const otherCharacter = characters.find(c => \n          c.name.toLowerCase() === otherCharacterName.toLowerCase() ||\n          (c.aliases || []).some(alias => alias.toLowerCase() === otherCharacterName.toLowerCase())\n        );\n        \n        if (otherCharacter) {\n          tracker.updateRelationship(otherCharacter.id, content, sceneIndex);\n        }\n      }\n    }\n  }\n\n  private async trackWorldElements(scene: Scene, sceneIndex: number, content: string): Promise<void> {\n    for (const [elementName, tracker] of this.worldElements) {\n      if (content.toLowerCase().includes(elementName.toLowerCase())) {\n        tracker.recordAppearance(sceneIndex, content);\n      }\n    }\n  }\n\n  private async recordTimelineEvents(scene: Scene, sceneIndex: number, content: string): Promise<void> {\n    // Extract temporal references\n    const timePatterns = [\n      /(?:after|before|during|while|when)\\s+([^.!?]+)/gi,\n      /(?:yesterday|today|tomorrow|last week|next month)/gi,\n      /(?:\\d+)\\s+(?:days|weeks|months|years)\\s+(?:ago|later)/gi\n    ];\n    \n    for (const pattern of timePatterns) {\n      let match;\n      while ((match = pattern.exec(content)) !== null) {\n        this.timelineEvents.push({\n          sceneIndex,\n          description: match[0],\n          type: 'temporal_reference',\n          timestamp: this.extractTimestamp(match[0])\n        });\n      }\n    }\n  }\n\n  private extractTimestamp(timeReference: string): number {\n    // Simple timestamp extraction - in a real implementation, this would be more sophisticated\n    const lowerRef = timeReference.toLowerCase();\n    \n    if (lowerRef.includes('ago')) {\n      const match = lowerRef.match(/(\\d+)\\s+(?:days|weeks|months|years)\\s+ago/);\n      if (match) {\n        const amount = parseInt(match[1]);\n        if (lowerRef.includes('days')) return -amount;\n        if (lowerRef.includes('weeks')) return -amount * 7;\n        if (lowerRef.includes('months')) return -amount * 30;\n        if (lowerRef.includes('years')) return -amount * 365;\n      }\n    }\n    \n    if (lowerRef.includes('later')) {\n      const match = lowerRef.match(/(\\d+)\\s+(?:days|weeks|months|years)\\s+later/);\n      if (match) {\n        const amount = parseInt(match[1]);\n        if (lowerRef.includes('days')) return amount;\n        if (lowerRef.includes('weeks')) return amount * 7;\n        if (lowerRef.includes('months')) return amount * 30;\n        if (lowerRef.includes('years')) return amount * 365;\n      }\n    }\n    \n    return 0; // Present time\n  }\n\n  private async detectPlotHoles(): Promise<PlotHole[]> {\n    const plotHoles: PlotHole[] = [];\n    \n    // Detect unresolved plot threads\n    for (const [threadId, thread] of this.plotThreads) {\n      if (thread.status === 'active' && thread.importance === 'major') {\n        plotHoles.push({\n          id: `unresolved_${threadId}`,\n          type: 'unresolved_thread',\n          severity: 'high',\n          description: `Major plot thread \"${thread.name}\" introduced in scene ${thread.introduced} but never resolved`,\n          scenes: thread.keyScenes,\n          suggestions: [\n            `Add a resolution scene for the ${thread.name} plot thread`,\n            'Provide closure or explanation for this story element',\n            'Consider if this thread is necessary for the story'\n          ]\n        });\n      }\n    }\n    \n    // Detect character knowledge inconsistencies\n    for (const [characterId, tracker] of this.characterStates) {\n      const inconsistencies = tracker.detectKnowledgeInconsistencies();\n      for (const inconsistency of inconsistencies) {\n        plotHoles.push({\n          id: `knowledge_${characterId}_${plotHoles.length}`,\n          type: 'character_knowledge',\n          severity: 'medium',\n          description: `Character ${tracker.character.name} ${inconsistency.description}`,\n          scenes: inconsistency.scenes,\n          suggestions: [\n            'Add a scene showing how the character acquired this knowledge',\n            'Remove the knowledge reference if it\\'s not needed',\n            'Establish the knowledge earlier in the story'\n          ]\n        });\n      }\n    }\n    \n    // Detect ability inconsistencies\n    for (const [characterId, tracker] of this.characterStates) {\n      const inconsistencies = tracker.detectAbilityInconsistencies();\n      for (const inconsistency of inconsistencies) {\n        plotHoles.push({\n          id: `ability_${characterId}_${plotHoles.length}`,\n          type: 'character_ability',\n          severity: 'medium',\n          description: `Character ${tracker.character.name} ${inconsistency.description}`,\n          scenes: inconsistency.scenes,\n          suggestions: [\n            'Show the character learning or acquiring this ability',\n            'Establish the ability earlier in the story',\n            'Provide explanation for the ability\\'s sudden appearance'\n          ]\n        });\n      }\n    }\n    \n    return plotHoles;\n  }\n\n  private async detectContinuityIssues(): Promise<ContinuityIssue[]> {\n    const issues: ContinuityIssue[] = [];\n    \n    // Detect timeline inconsistencies\n    const timelineIssues = this.detectTimelineInconsistencies();\n    issues.push(...timelineIssues);\n    \n    // Detect world element inconsistencies\n    const worldIssues = this.detectWorldElementInconsistencies();\n    issues.push(...worldIssues);\n    \n    return issues;\n  }\n\n  private detectTimelineInconsistencies(): ContinuityIssue[] {\n    const issues: ContinuityIssue[] = [];\n    \n    // Sort timeline events by scene index\n    const sortedEvents = [...this.timelineEvents].sort((a, b) => a.sceneIndex - b.sceneIndex);\n    \n    // Check for temporal contradictions\n    for (let i = 0; i < sortedEvents.length - 1; i++) {\n      const currentEvent = sortedEvents[i];\n      const nextEvent = sortedEvents[i + 1];\n      \n      // Check if timestamps are inconsistent with scene order\n      if (currentEvent.timestamp > nextEvent.timestamp && \n          currentEvent.sceneIndex < nextEvent.sceneIndex) {\n        issues.push({\n          id: `timeline_${i}`,\n          type: 'timeline',\n          severity: 'medium',\n          description: `Timeline inconsistency between scenes ${currentEvent.sceneIndex} and ${nextEvent.sceneIndex}`,\n          scenes: [currentEvent.sceneIndex, nextEvent.sceneIndex],\n          conflictingElements: [currentEvent.description, nextEvent.description],\n          suggestions: [\n            'Adjust the temporal references to maintain chronological order',\n            'Add clarifying information about the timeline',\n            'Consider using flashbacks or flash-forwards explicitly'\n          ]\n        });\n      }\n    }\n    \n    return issues;\n  }\n\n  private detectWorldElementInconsistencies(): ContinuityIssue[] {\n    const issues: ContinuityIssue[] = [];\n    \n    for (const [elementName, tracker] of this.worldElements) {\n      const inconsistencies = tracker.detectInconsistencies();\n      for (const inconsistency of inconsistencies) {\n        issues.push({\n          id: `world_${elementName}_${issues.length}`,\n          type: 'object',\n          severity: inconsistency.severity,\n          description: `World element \"${elementName}\" ${inconsistency.description}`,\n          scenes: inconsistency.scenes,\n          conflictingElements: inconsistency.conflictingDescriptions,\n          suggestions: [\n            'Ensure consistent descriptions of world elements',\n            'Establish clear rules for how world elements work',\n            'Remove contradictory information'\n          ]\n        });\n      }\n    }\n    \n    return issues;\n  }\n\n  private async detectCharacterInconsistencies(): Promise<CharacterInconsistency[]> {\n    const inconsistencies: CharacterInconsistency[] = [];\n    \n    for (const [characterId, tracker] of this.characterStates) {\n      // Detect personality inconsistencies\n      const personalityIssues = tracker.detectPersonalityInconsistencies();\n      for (const issue of personalityIssues) {\n        inconsistencies.push({\n          id: `personality_${characterId}_${inconsistencies.length}`,\n          characterId,\n          characterName: tracker.character.name,\n          type: 'personality',\n          severity: issue.severity,\n          description: issue.description,\n          scenes: issue.scenes,\n          conflictingTraits: issue.conflictingTraits,\n          suggestions: [\n            'Ensure character actions align with established personality',\n            'Provide character development to explain personality changes',\n            'Review character consistency across scenes'\n          ]\n        });\n      }\n      \n      // Detect motivation inconsistencies\n      const motivationIssues = tracker.detectMotivationInconsistencies();\n      for (const issue of motivationIssues) {\n        inconsistencies.push({\n          id: `motivation_${characterId}_${inconsistencies.length}`,\n          characterId,\n          characterName: tracker.character.name,\n          type: 'motivation',\n          severity: issue.severity,\n          description: issue.description,\n          scenes: issue.scenes,\n          conflictingTraits: issue.conflictingMotivations,\n          suggestions: [\n            'Clarify character motivations and goals',\n            'Show character growth that explains motivation changes',\n            'Ensure actions are consistent with stated motivations'\n          ]\n        });\n      }\n    }\n    \n    return inconsistencies;\n  }\n\n  private async generateSuggestions(\n    plotHoles: PlotHole[],\n    continuityIssues: ContinuityIssue[],\n    characterInconsistencies: CharacterInconsistency[]\n  ): Promise<PlotHoleSuggestion[]> {\n    const suggestions: PlotHoleSuggestion[] = [];\n    \n    // Generate suggestions for plot holes\n    for (const plotHole of plotHoles) {\n      const suggestion: PlotHoleSuggestion = {\n        id: `suggestion_${plotHole.id}`,\n        type: this.getSuggestionType(plotHole.type),\n        priority: this.mapSeverityToPriority(plotHole.severity),\n        description: `Address ${plotHole.type}: ${plotHole.description}`,\n        targetScene: plotHole.scenes[0],\n        implementation: plotHole.suggestions,\n        relatedPlotHoles: [plotHole.id]\n      };\n      suggestions.push(suggestion);\n    }\n    \n    // Generate suggestions for continuity issues\n    for (const issue of continuityIssues) {\n      const suggestion: PlotHoleSuggestion = {\n        id: `suggestion_${issue.id}`,\n        type: 'modify_scene',\n        priority: this.mapSeverityToPriority(issue.severity),\n        description: `Fix continuity issue: ${issue.description}`,\n        targetScene: issue.scenes[0],\n        implementation: issue.suggestions,\n        relatedPlotHoles: []\n      };\n      suggestions.push(suggestion);\n    }\n    \n    // Generate suggestions for character inconsistencies\n    for (const inconsistency of characterInconsistencies) {\n      const suggestion: PlotHoleSuggestion = {\n        id: `suggestion_${inconsistency.id}`,\n        type: 'character_development',\n        priority: this.mapSeverityToPriority(inconsistency.severity),\n        description: `Fix character inconsistency: ${inconsistency.description}`,\n        targetScene: inconsistency.scenes[0],\n        implementation: inconsistency.suggestions,\n        relatedPlotHoles: []\n      };\n      suggestions.push(suggestion);\n    }\n    \n    return suggestions.sort((a, b) => {\n      const priorityOrder = { critical: 4, high: 3, medium: 2, low: 1 };\n      return priorityOrder[b.priority] - priorityOrder[a.priority];\n    });\n  }\n\n  private getSuggestionType(plotHoleType: string): PlotHoleSuggestion['type'] {\n    switch (plotHoleType) {\n      case 'unresolved_thread': return 'add_scene';\n      case 'character_knowledge': return 'character_development';\n      case 'character_ability': return 'character_development';\n      default: return 'modify_scene';\n    }\n  }\n\n  private mapSeverityToPriority(severity: string): PlotHoleSuggestion['priority'] {\n    switch (severity) {\n      case 'critical': return 'critical';\n      case 'high': return 'high';\n      case 'medium': return 'medium';\n      case 'low': return 'low';\n      default: return 'medium';\n    }\n  }\n\n  private calculateConsistencyScore(\n    plotHoles: PlotHole[],\n    continuityIssues: ContinuityIssue[],\n    characterInconsistencies: CharacterInconsistency[]\n  ): number {\n    const totalIssues = plotHoles.length + continuityIssues.length + characterInconsistencies.length;\n    \n    if (totalIssues === 0) return 100;\n    \n    // Weight issues by severity\n    let weightedIssues = 0;\n    \n    for (const plotHole of plotHoles) {\n      weightedIssues += this.getSeverityWeight(plotHole.severity);\n    }\n    \n    for (const issue of continuityIssues) {\n      weightedIssues += this.getSeverityWeight(issue.severity);\n    }\n    \n    for (const inconsistency of characterInconsistencies) {\n      weightedIssues += this.getSeverityWeight(inconsistency.severity);\n    }\n    \n    // Calculate score (0-100)\n    const maxPossibleWeight = totalIssues * 4; // Assuming all issues are critical\n    const score = Math.max(0, 100 - (weightedIssues / maxPossibleWeight) * 100);\n    \n    return Math.round(score);\n  }\n\n  private getSeverityWeight(severity: string): number {\n    switch (severity) {\n      case 'critical': return 4;\n      case 'high': return 3;\n      case 'medium': return 2;\n      case 'low': return 1;\n      default: return 2;\n    }\n  }\n\n  private convertToPlotThread(tracker: PlotThreadTracker): PlotThread {\n    return {\n      id: tracker.id,\n      name: tracker.name,\n      description: tracker.description,\n      introduced: tracker.introduced,\n      resolved: tracker.resolved,\n      status: tracker.status,\n      importance: tracker.importance,\n      relatedCharacters: tracker.relatedCharacters,\n      keyScenes: tracker.keyScenes\n    };\n  }\n\n  // Public API methods\n  async validateStoryConsistency(story: Story): Promise<{ consistent: boolean; issues: string[] }> {\n    const analysis = await this.analyzeStoryForPlotHoles(story);\n    const issues: string[] = [];\n    \n    if (analysis.plotHoles.length > 0) {\n      issues.push(`Found ${analysis.plotHoles.length} plot holes`);\n    }\n    \n    if (analysis.continuityIssues.length > 0) {\n      issues.push(`Found ${analysis.continuityIssues.length} continuity issues`);\n    }\n    \n    if (analysis.characterInconsistencies.length > 0) {\n      issues.push(`Found ${analysis.characterInconsistencies.length} character inconsistencies`);\n    }\n    \n    return {\n      consistent: analysis.overallScore >= 80,\n      issues\n    };\n  }\n\n  async getPlotThreadSummary(story: Story): Promise<PlotThread[]> {\n    const analysis = await this.analyzeStoryForPlotHoles(story);\n    return analysis.plotThreads;\n  }\n}\n\n// Helper classes\nclass CharacterStateTracker {\n  public character: Character;\n  private knowledge: Map<string, number> = new Map(); // knowledge -> scene where acquired\n  private abilities: Map<string, number> = new Map(); // ability -> scene where acquired\n  private relationships: Map<string, { status: string; scene: number }[]> = new Map();\n  private appearances: number[] = [];\n\n  constructor(character: Character) {\n    this.character = character;\n  }\n\n  recordPresence(sceneIndex: number): void {\n    this.appearances.push(sceneIndex);\n  }\n\n  addKnowledge(knowledge: string, sceneIndex: number): void {\n    this.knowledge.set(knowledge, sceneIndex);\n  }\n\n  addAbility(ability: string, sceneIndex: number): void {\n    this.abilities.set(ability, sceneIndex);\n  }\n\n  updateRelationship(otherCharacterId: string, context: string, sceneIndex: number): void {\n    if (!this.relationships.has(otherCharacterId)) {\n      this.relationships.set(otherCharacterId, []);\n    }\n    \n    const relationshipHistory = this.relationships.get(otherCharacterId)!;\n    relationshipHistory.push({\n      status: this.extractRelationshipStatus(context),\n      scene: sceneIndex\n    });\n  }\n\n  private extractRelationshipStatus(context: string): string {\n    const lowerContext = context.toLowerCase();\n    if (lowerContext.includes('love')) return 'love';\n    if (lowerContext.includes('hate')) return 'hate';\n    if (lowerContext.includes('trust')) return 'trust';\n    if (lowerContext.includes('distrust')) return 'distrust';\n    if (lowerContext.includes('friend')) return 'friend';\n    if (lowerContext.includes('enemy')) return 'enemy';\n    return 'neutral';\n  }\n\n  detectKnowledgeInconsistencies(): Array<{ description: string; scenes: number[]; severity: string }> {\n    const inconsistencies: Array<{ description: string; scenes: number[]; severity: string }> = [];\n    \n    // Check for knowledge used before acquisition\n    for (const [knowledge, acquisitionScene] of this.knowledge) {\n      const earlierUses = this.appearances.filter(scene => scene < acquisitionScene);\n      if (earlierUses.length > 0) {\n        inconsistencies.push({\n          description: `uses knowledge \"${knowledge}\" before acquiring it`,\n          scenes: [acquisitionScene, ...earlierUses],\n          severity: 'medium'\n        });\n      }\n    }\n    \n    return inconsistencies;\n  }\n\n  detectAbilityInconsistencies(): Array<{ description: string; scenes: number[]; severity: string }> {\n    const inconsistencies: Array<{ description: string; scenes: number[]; severity: string }> = [];\n    \n    // Check for abilities used before acquisition\n    for (const [ability, acquisitionScene] of this.abilities) {\n      const earlierUses = this.appearances.filter(scene => scene < acquisitionScene);\n      if (earlierUses.length > 0) {\n        inconsistencies.push({\n          description: `uses ability \"${ability}\" before acquiring it`,\n          scenes: [acquisitionScene, ...earlierUses],\n          severity: 'medium'\n        });\n      }\n    }\n    \n    return inconsistencies;\n  }\n\n  detectPersonalityInconsistencies(): Array<{ description: string; scenes: number[]; conflictingTraits: string[]; severity: string }> {\n    // This would be more sophisticated in a real implementation\n    return [];\n  }\n\n  detectMotivationInconsistencies(): Array<{ description: string; scenes: number[]; conflictingMotivations: string[]; severity: string }> {\n    // This would be more sophisticated in a real implementation\n    return [];\n  }\n}\n\nclass WorldElementTracker {\n  private elementName: string;\n  private appearances: Array<{ scene: number; description: string }> = [];\n\n  constructor(elementName: string) {\n    this.elementName = elementName;\n  }\n\n  recordAppearance(sceneIndex: number, description: string): void {\n    this.appearances.push({ scene: sceneIndex, description });\n  }\n\n  detectInconsistencies(): Array<{ description: string; scenes: number[]; conflictingDescriptions: string[]; severity: string }> {\n    const inconsistencies: Array<{ description: string; scenes: number[]; conflictingDescriptions: string[]; severity: string }> = [];\n    \n    // Simple inconsistency detection - in reality, this would be much more sophisticated\n    const descriptions = this.appearances.map(a => a.description);\n    const uniqueDescriptions = [...new Set(descriptions)];\n    \n    if (uniqueDescriptions.length > 1) {\n      inconsistencies.push({\n        description: `has conflicting descriptions across scenes`,\n        scenes: this.appearances.map(a => a.scene),\n        conflictingDescriptions: uniqueDescriptions,\n        severity: 'low'\n      });\n    }\n    \n    return inconsistencies;\n  }\n}\n\ninterface TimelineEvent {\n  sceneIndex: number;\n  description: string;\n  type: string;\n  timestamp: number; // Relative time in days\n}"
+      while ((match = pattern.exec(content)) !== null) {
+        tracker.addKnowledge(match[1].trim(), sceneIndex);
+      }
+    }
+  }
+
+  private async updateCharacterAbilities(tracker: CharacterStateTracker, content: string, sceneIndex: number): Promise<void> {
+    // Detect ability demonstrations or acquisitions
+    const abilityPatterns = [
+      /(?:can|able to|capable of)\s+([^.!?]+)/gi,
+      /(?:learned to|mastered|gained the ability)\s+([^.!?]+)/gi,
+      /(?:cast|performed|used)\s+([^.!?]+)/gi
+    ];
+    
+    for (const pattern of abilityPatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        tracker.addAbility(match[1].trim(), sceneIndex);
+      }
+    }
+  }
+
+  private async updateCharacterRelationships(tracker: CharacterStateTracker, content: string, sceneIndex: number, characters: Character[]): Promise<void> {
+    // Detect relationship changes
+    const relationshipPatterns = [
+      /(?:loves|hates|trusts|distrusts|befriends|betrays)\s+([A-Z][a-z]+)/gi,
+      /(?:ally|enemy|friend|rival)\s+(?:of\s+)?([A-Z][a-z]+)/gi
+    ];
+    
+    for (const pattern of relationshipPatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const otherCharacterName = match[1];
+        const otherCharacter = characters.find(c => 
+          c.name.toLowerCase() === otherCharacterName.toLowerCase() ||
+          (c.aliases || []).some(alias => alias.toLowerCase() === otherCharacterName.toLowerCase())
+        );
+        
+        if (otherCharacter) {
+          tracker.updateRelationship(otherCharacter.id, content, sceneIndex);
+        }
+      }
+    }
+  }
+
+  private async trackWorldElements(scene: Scene, sceneIndex: number, content: string): Promise<void> {
+    for (const [elementName, tracker] of this.worldElements) {
+      if (content.toLowerCase().includes(elementName.toLowerCase())) {
+        tracker.recordAppearance(sceneIndex, content);
+      }
+    }
+  }
+
+  private async recordTimelineEvents(scene: Scene, sceneIndex: number, content: string): Promise<void> {
+    // Extract temporal references
+    const timePatterns = [
+      /(?:after|before|during|while|when)\s+([^.!?]+)/gi,
+      /(?:yesterday|today|tomorrow|last week|next month)/gi,
+      /(?:\d+)\s+(?:days|weeks|months|years)\s+(?:ago|later)/gi
+    ];
+    
+    for (const pattern of timePatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        this.timelineEvents.push({
+          sceneIndex,
+          description: match[0],
+          type: 'temporal_reference',
+          timestamp: this.extractTimestamp(match[0])
+        });
+      }
+    }
+  }
+
+  private extractTimestamp(timeReference: string): number {
+    // Simple timestamp extraction - in a real implementation, this would be more sophisticated
+    const lowerRef = timeReference.toLowerCase();
+    
+    if (lowerRef.includes('ago')) {
+      const match = lowerRef.match(/(\d+)\s+(?:days|weeks|months|years)\s+ago/);
+      if (match) {
+        const amount = parseInt(match[1]);
+        if (lowerRef.includes('days')) return -amount;
+        if (lowerRef.includes('weeks')) return -amount * 7;
+        if (lowerRef.includes('months')) return -amount * 30;
+        if (lowerRef.includes('years')) return -amount * 365;
+      }
+    }
+    
+    if (lowerRef.includes('later')) {
+      const match = lowerRef.match(/(\d+)\s+(?:days|weeks|months|years)\s+later/);
+      if (match) {
+        const amount = parseInt(match[1]);
+        if (lowerRef.includes('days')) return amount;
+        if (lowerRef.includes('weeks')) return amount * 7;
+        if (lowerRef.includes('months')) return amount * 30;
+        if (lowerRef.includes('years')) return amount * 365;
+      }
+    }
+    
+    return 0; // Present time
+  }
+
+  private async detectPlotHoles(): Promise<PlotHole[]> {
+    const plotHoles: PlotHole[] = [];
+    
+    // Detect unresolved plot threads
+    for (const [threadId, thread] of this.plotThreads) {
+      if (thread.status === 'active' && thread.importance === 'major') {
+        plotHoles.push({
+          id: `unresolved_${threadId}`,
+          type: 'unresolved_thread',
+          severity: 'high',
+          description: `Major plot thread "${thread.name}" introduced in scene ${thread.introduced} but never resolved`,
+          scenes: thread.keyScenes,
+          suggestions: [
+            `Add a resolution scene for the ${thread.name} plot thread`,
+            'Provide closure or explanation for this story element',
+            'Consider if this thread is necessary for the story'
+          ]
+        });
+      }
+    }
+    
+    // Detect character knowledge inconsistencies
+    for (const [characterId, tracker] of this.characterStates) {
+      const inconsistencies = tracker.detectKnowledgeInconsistencies();
+      for (const inconsistency of inconsistencies) {
+        plotHoles.push({
+          id: `knowledge_${characterId}_${plotHoles.length}`,
+          type: 'character_knowledge',
+          severity: 'medium',
+          description: `Character ${tracker.character.name} ${inconsistency.description}`,
+          scenes: inconsistency.scenes,
+          suggestions: [
+            'Add a scene showing how the character acquired this knowledge',
+            'Remove the knowledge reference if it\'s not needed',
+            'Establish the knowledge earlier in the story'
+          ]
+        });
+      }
+    }
+    
+    // Detect ability inconsistencies
+    for (const [characterId, tracker] of this.characterStates) {
+      const inconsistencies = tracker.detectAbilityInconsistencies();
+      for (const inconsistency of inconsistencies) {
+        plotHoles.push({
+          id: `ability_${characterId}_${plotHoles.length}`,
+          type: 'character_ability',
+          severity: 'medium',
+          description: `Character ${tracker.character.name} ${inconsistency.description}`,
+          scenes: inconsistency.scenes,
+          suggestions: [
+            'Show the character learning or acquiring this ability',
+            'Establish the ability earlier in the story',
+            'Provide explanation for the ability\'s sudden appearance'
+          ]
+        });
+      }
+    }
+    
+    return plotHoles;
+  }
+
+  private async detectContinuityIssues(): Promise<ContinuityIssue[]> {
+    const issues: ContinuityIssue[] = [];
+    
+    // Detect timeline inconsistencies
+    const timelineIssues = this.detectTimelineInconsistencies();
+    issues.push(...timelineIssues);
+    
+    // Detect world element inconsistencies
+    const worldIssues = this.detectWorldElementInconsistencies();
+    issues.push(...worldIssues);
+    
+    return issues;
+  }
+
+  private detectTimelineInconsistencies(): ContinuityIssue[] {
+    const issues: ContinuityIssue[] = [];
+    
+    // Sort timeline events by scene index
+    const sortedEvents = [...this.timelineEvents].sort((a, b) => a.sceneIndex - b.sceneIndex);
+    
+    // Check for temporal contradictions
+    for (let i = 0; i < sortedEvents.length - 1; i++) {
+      const currentEvent = sortedEvents[i];
+      const nextEvent = sortedEvents[i + 1];
+      
+      // Check if timestamps are inconsistent with scene order
+      if (currentEvent.timestamp > nextEvent.timestamp && 
+          currentEvent.sceneIndex < nextEvent.sceneIndex) {
+        issues.push({
+          id: `timeline_${i}`,
+          type: 'timeline',
+          severity: 'medium',
+          description: `Timeline inconsistency between scenes ${currentEvent.sceneIndex} and ${nextEvent.sceneIndex}`,
+          scenes: [currentEvent.sceneIndex, nextEvent.sceneIndex],
+          conflictingElements: [currentEvent.description, nextEvent.description],
+          suggestions: [
+            'Adjust the temporal references to maintain chronological order',
+            'Add clarifying information about the timeline',
+            'Consider using flashbacks or flash-forwards explicitly'
+          ]
+        });
+      }
+    }
+    
+    return issues;
+  }
+
+  private detectWorldElementInconsistencies(): ContinuityIssue[] {
+    const issues: ContinuityIssue[] = [];
+    
+    for (const [elementName, tracker] of this.worldElements) {
+      const inconsistencies = tracker.detectInconsistencies();
+      for (const inconsistency of inconsistencies) {
+        issues.push({
+          id: `world_${elementName}_${issues.length}`,
+          type: 'object',
+          severity: inconsistency.severity,
+          description: `World element "${elementName}" ${inconsistency.description}`,
+          scenes: inconsistency.scenes,
+          conflictingElements: inconsistency.conflictingDescriptions,
+          suggestions: [
+            'Ensure consistent descriptions of world elements',
+            'Establish clear rules for how world elements work',
+            'Remove contradictory information'
+          ]
+        });
+      }
+    }
+    
+    return issues;
+  }
+
+  private async detectCharacterInconsistencies(): Promise<CharacterInconsistency[]> {
+    const inconsistencies: CharacterInconsistency[] = [];
+    
+    for (const [characterId, tracker] of this.characterStates) {
+      // Detect personality inconsistencies
+      const personalityIssues = tracker.detectPersonalityInconsistencies();
+      for (const issue of personalityIssues) {
+        inconsistencies.push({
+          id: `personality_${characterId}_${inconsistencies.length}`,
+          characterId,
+          characterName: tracker.character.name,
+          type: 'personality',
+          severity: issue.severity,
+          description: issue.description,
+          scenes: issue.scenes,
+          conflictingTraits: issue.conflictingTraits,
+          suggestions: [
+            'Ensure character actions align with established personality',
+            'Provide character development to explain personality changes',
+            'Review character consistency across scenes'
+          ]
+        });
+      }
+      
+      // Detect motivation inconsistencies
+      const motivationIssues = tracker.detectMotivationInconsistencies();
+      for (const issue of motivationIssues) {
+        inconsistencies.push({
+          id: `motivation_${characterId}_${inconsistencies.length}`,
+          characterId,
+          characterName: tracker.character.name,
+          type: 'motivation',
+          severity: issue.severity,
+          description: issue.description,
+          scenes: issue.scenes,
+          conflictingTraits: issue.conflictingMotivations,
+          suggestions: [
+            'Clarify character motivations and goals',
+            'Show character growth that explains motivation changes',
+            'Ensure actions are consistent with stated motivations'
+          ]
+        });
+      }
+    }
+    
+    return inconsistencies;
+  }
+
+  private async generateSuggestions(
+    plotHoles: PlotHole[],
+    continuityIssues: ContinuityIssue[],
+    characterInconsistencies: CharacterInconsistency[]
+  ): Promise<PlotHoleSuggestion[]> {
+    const suggestions: PlotHoleSuggestion[] = [];
+    
+    // Generate suggestions for plot holes
+    for (const plotHole of plotHoles) {
+      const suggestion: PlotHoleSuggestion = {
+        id: `suggestion_${plotHole.id}`,
+        type: this.getSuggestionType(plotHole.type),
+        priority: this.mapSeverityToPriority(plotHole.severity),
+        description: `Address ${plotHole.type}: ${plotHole.description}`,
+        targetScene: plotHole.scenes[0],
+        implementation: plotHole.suggestions,
+        relatedPlotHoles: [plotHole.id]
+      };
+      suggestions.push(suggestion);
+    }
+    
+    // Generate suggestions for continuity issues
+    for (const issue of continuityIssues) {
+      const suggestion: PlotHoleSuggestion = {
+        id: `suggestion_${issue.id}`,
+        type: 'modify_scene',
+        priority: this.mapSeverityToPriority(issue.severity),
+        description: `Fix continuity issue: ${issue.description}`,
+        targetScene: issue.scenes[0],
+        implementation: issue.suggestions,
+        relatedPlotHoles: []
+      };
+      suggestions.push(suggestion);
+    }
+    
+    // Generate suggestions for character inconsistencies
+    for (const inconsistency of characterInconsistencies) {
+      const suggestion: PlotHoleSuggestion = {
+        id: `suggestion_${inconsistency.id}`,
+        type: 'character_development',
+        priority: this.mapSeverityToPriority(inconsistency.severity),
+        description: `Fix character inconsistency: ${inconsistency.description}`,
+        targetScene: inconsistency.scenes[0],
+        implementation: inconsistency.suggestions,
+        relatedPlotHoles: []
+      };
+      suggestions.push(suggestion);
+    }
+    
+    return suggestions.sort((a, b) => {
+      const priorityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
+      return priorityOrder[b.priority] - priorityOrder[a.priority];
+    });
+  }
+
+  private getSuggestionType(plotHoleType: string): PlotHoleSuggestion['type'] {
+    switch (plotHoleType) {
+      case 'unresolved_thread': return 'add_scene';
+      case 'character_knowledge': return 'character_development';
+      case 'character_ability': return 'character_development';
+      default: return 'modify_scene';
+    }
+  }
+
+  private mapSeverityToPriority(severity: string): PlotHoleSuggestion['priority'] {
+    switch (severity) {
+      case 'critical': return 'critical';
+      case 'high': return 'high';
+      case 'medium': return 'medium';
+      case 'low': return 'low';
+      default: return 'medium';
+    }
+  }
+
+  private calculateConsistencyScore(
+    plotHoles: PlotHole[],
+    continuityIssues: ContinuityIssue[],
+    characterInconsistencies: CharacterInconsistency[]
+  ): number {
+    const totalIssues = plotHoles.length + continuityIssues.length + characterInconsistencies.length;
+    
+    if (totalIssues === 0) return 100;
+    
+    // Weight issues by severity
+    let weightedIssues = 0;
+    
+    for (const plotHole of plotHoles) {
+      weightedIssues += this.getSeverityWeight(plotHole.severity);
+    }
+    
+    for (const issue of continuityIssues) {
+      weightedIssues += this.getSeverityWeight(issue.severity);
+    }
+    
+    for (const inconsistency of characterInconsistencies) {
+      weightedIssues += this.getSeverityWeight(inconsistency.severity);
+    }
+    
+    // Calculate score (0-100)
+    const maxPossibleWeight = totalIssues * 4; // Assuming all issues are critical
+    const score = Math.max(0, 100 - (weightedIssues / maxPossibleWeight) * 100);
+    
+    return Math.round(score);
+  }
+
+  private getSeverityWeight(severity: string): number {
+    switch (severity) {
+      case 'critical': return 4;
+      case 'high': return 3;
+      case 'medium': return 2;
+      case 'low': return 1;
+      default: return 2;
+    }
+  }
+
+  private convertToPlotThread(tracker: PlotThreadTracker): PlotThread {
+    return {
+      id: tracker.id,
+      name: tracker.name,
+      description: tracker.description,
+      introduced: tracker.introduced,
+      resolved: tracker.resolved,
+      status: tracker.status,
+      importance: tracker.importance,
+      relatedCharacters: tracker.relatedCharacters,
+      keyScenes: tracker.keyScenes
+    };
+  }
+
+  // Public API methods
+  async validateStoryConsistency(story: Story): Promise<{ consistent: boolean; issues: string[] }> {
+    const analysis = await this.analyzeStoryForPlotHoles(story);
+    const issues: string[] = [];
+    
+    if (analysis.plotHoles.length > 0) {
+      issues.push(`Found ${analysis.plotHoles.length} plot holes`);
+    }
+    
+    if (analysis.continuityIssues.length > 0) {
+      issues.push(`Found ${analysis.continuityIssues.length} continuity issues`);
+    }
+    
+    if (analysis.characterInconsistencies.length > 0) {
+      issues.push(`Found ${analysis.characterInconsistencies.length} character inconsistencies`);
+    }
+    
+    return {
+      consistent: analysis.overallScore >= 80,
+      issues
+    };
+  }
+
+  async getPlotThreadSummary(story: Story): Promise<PlotThread[]> {
+    const analysis = await this.analyzeStoryForPlotHoles(story);
+    return analysis.plotThreads;
+  }
+}
+
+// Helper classes
+class CharacterStateTracker {
+  public character: Character;
+  private knowledge: Map<string, number> = new Map(); // knowledge -> scene where acquired
+  private abilities: Map<string, number> = new Map(); // ability -> scene where acquired
+  private relationships: Map<string, { status: string; scene: number }[]> = new Map();
+  private appearances: number[] = [];
+
+  constructor(character: Character) {
+    this.character = character;
+  }
+
+  recordPresence(sceneIndex: number): void {
+    this.appearances.push(sceneIndex);
+  }
+
+  addKnowledge(knowledge: string, sceneIndex: number): void {
+    this.knowledge.set(knowledge, sceneIndex);
+  }
+
+  addAbility(ability: string, sceneIndex: number): void {
+    this.abilities.set(ability, sceneIndex);
+  }
+
+  updateRelationship(otherCharacterId: string, context: string, sceneIndex: number): void {
+    if (!this.relationships.has(otherCharacterId)) {
+      this.relationships.set(otherCharacterId, []);
+    }
+    
+    const relationshipHistory = this.relationships.get(otherCharacterId)!;
+    relationshipHistory.push({
+      status: this.extractRelationshipStatus(context),
+      scene: sceneIndex
+    });
+  }
+
+  private extractRelationshipStatus(context: string): string {
+    const lowerContext = context.toLowerCase();
+    if (lowerContext.includes('love')) return 'love';
+    if (lowerContext.includes('hate')) return 'hate';
+    if (lowerContext.includes('trust')) return 'trust';
+    if (lowerContext.includes('distrust')) return 'distrust';
+    if (lowerContext.includes('friend')) return 'friend';
+    if (lowerContext.includes('enemy')) return 'enemy';
+    return 'neutral';
+  }
+
+  detectKnowledgeInconsistencies(): Array<{ description: string; scenes: number[]; severity: string }> {
+    const inconsistencies: Array<{ description: string; scenes: number[]; severity: string }> = [];
+    
+    // Check for knowledge used before acquisition
+    for (const [knowledge, acquisitionScene] of this.knowledge) {
+      const earlierUses = this.appearances.filter(scene => scene < acquisitionScene);
+      if (earlierUses.length > 0) {
+        inconsistencies.push({
+          description: `uses knowledge "${knowledge}" before acquiring it`,
+          scenes: [acquisitionScene, ...earlierUses],
+          severity: 'medium'
+        });
+      }
+    }
+    
+    return inconsistencies;
+  }
+
+  detectAbilityInconsistencies(): Array<{ description: string; scenes: number[]; severity: string }> {
+    const inconsistencies: Array<{ description: string; scenes: number[]; severity: string }> = [];
+    
+    // Check for abilities used before acquisition
+    for (const [ability, acquisitionScene] of this.abilities) {
+      const earlierUses = this.appearances.filter(scene => scene < acquisitionScene);
+      if (earlierUses.length > 0) {
+        inconsistencies.push({
+          description: `uses ability "${ability}" before acquiring it`,
+          scenes: [acquisitionScene, ...earlierUses],
+          severity: 'medium'
+        });
+      }
+    }
+    
+    return inconsistencies;
+  }
+
+  detectPersonalityInconsistencies(): Array<{ description: string; scenes: number[]; conflictingTraits: string[]; severity: string }> {
+    // This would be more sophisticated in a real implementation
+    return [];
+  }
+
+  detectMotivationInconsistencies(): Array<{ description: string; scenes: number[]; conflictingMotivations: string[]; severity: string }> {
+    // This would be more sophisticated in a real implementation
+    return [];
+  }
+}
+
+class WorldElementTracker {
+  private elementName: string;
+  private appearances: Array<{ scene: number; description: string }> = [];
+
+  constructor(elementName: string) {
+    this.elementName = elementName;
+  }
+
+  recordAppearance(sceneIndex: number, description: string): void {
+    this.appearances.push({ scene: sceneIndex, description });
+  }
+
+  detectInconsistencies(): Array<{ description: string; scenes: number[]; conflictingDescriptions: string[]; severity: string }> {
+    const inconsistencies: Array<{ description: string; scenes: number[]; conflictingDescriptions: string[]; severity: string }> = [];
+    
+    // Simple inconsistency detection - in reality, this would be much more sophisticated
+    const descriptions = this.appearances.map(a => a.description);
+    const uniqueDescriptions = [...new Set(descriptions)];
+    
+    if (uniqueDescriptions.length > 1) {
+      inconsistencies.push({
+        description: `has conflicting descriptions across scenes`,
+        scenes: this.appearances.map(a => a.scene),
+        conflictingDescriptions: uniqueDescriptions,
+        severity: 'low'
+      });
+    }
+    
+    return inconsistencies;
+  }
+}
+
+interface TimelineEvent {
+  sceneIndex: number;
+  description: string;
+  type: string;
+  timestamp: number; // Relative time in days
+}

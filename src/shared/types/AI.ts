@@ -1,4 +1,17 @@
-import { Story, Character, Scene, StructureAnalysis, CharacterAnalysisResult, PacingAnalysis, ConsistencyReport } from './Story';
+import { 
+  Story, 
+  Character, 
+  Scene, 
+  Chapter,
+  ChapterAnalysis,
+  StructureAnalysis, 
+  CharacterAnalysisResult, 
+  PacingAnalysis, 
+  ConsistencyReport,
+  CharacterTraits,
+  StoryStructure,
+  StructureBeat
+} from './Story';
 
 export interface AIProvider {
   name: string;
@@ -8,9 +21,12 @@ export interface AIProvider {
   
   initialize(config: ProviderConfig): Promise<void>;
   generateText(prompt: string, context: StoryContext): Promise<AIResponse>;
-  analyzeStory(content: string): Promise<StoryAnalysis>;
+  analyzeStory(story: Story): Promise<StoryAnalysis>;
+  analyzeScene?(scene: Scene): Promise<any>;
+  analyzeCharacter?(character: Character): Promise<any>;
+  generateSuggestions?(context: any): Promise<any>;
   generateCharacter(traits: CharacterTraits): Promise<Character>;
-  isAvailable(): boolean;
+  isAvailable(): Promise<boolean>;
   shutdown(): Promise<void>;
 }
 
@@ -61,6 +77,7 @@ export interface StoryContext {
 
 export interface AIResponse {
   content: string;
+  text: string; // Add text property that some files expect
   confidence: number;
   metadata: {
     model: string;
@@ -81,28 +98,7 @@ export interface StoryAnalysis {
   recommendations: string[];
 }
 
-export interface CharacterTraits {
-  personality: string[];
-  motivations: string[];
-  fears: string[];
-  strengths: string[];
-  weaknesses: string[];
-  quirks: string[];
-}
-
-export interface StoryStructure {
-  type: 'save-the-cat' | 'hero-journey' | 'three-act' | 'monogatari' | 'custom';
-  beats: StructureBeat[];
-  currentBeat?: string;
-}
-
-export interface StructureBeat {
-  name: string;
-  description: string;
-  targetWordCount?: number;
-  completed: boolean;
-  chapterIds: string[];
-}
+// CharacterTraits, StoryStructure, and StructureBeat are imported from Story.ts to avoid duplicates
 
 export interface Outline {
   title: string;
@@ -177,26 +173,7 @@ export interface ForeshadowingSuggestion {
   description: string;
 }
 
-export interface Chapter {
-  id: string;
-  storyId: string;
-  title: string;
-  content: string;
-  scenes: Scene[];
-  order: number;
-  wordCount: number;
-  analysis?: ChapterAnalysis;
-}
-
-export interface ChapterAnalysis {
-  wordCount: number;
-  readingTime: number;
-  pacing: number;
-  tension: number;
-  characterFocus: string[];
-  plotAdvancement: number;
-  suggestions: string[];
-}
+// Chapter and ChapterAnalysis are imported from Story.ts to avoid duplicates
 
 // AI Router for intelligent provider selection
 export interface AIRouter {
