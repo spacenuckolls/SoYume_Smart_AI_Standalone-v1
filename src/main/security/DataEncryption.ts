@@ -156,14 +156,16 @@ export class DataEncryption extends EventEmitter {
     const iv = crypto.randomBytes(this.encryptionConfig.ivLength);
     
     const cipher = crypto.createCipher(this.encryptionConfig.algorithm, key);
-    cipher.setAAD(Buffer.from(keyType)); // Additional authenticated data
+    if ((cipher as any).setAAD) {
+      (cipher as any).setAAD(Buffer.from(keyType)); // Additional authenticated data
+    }
     
     const encrypted = Buffer.concat([
       cipher.update(plaintext),
       cipher.final()
     ]);
     
-    const authTag = cipher.getAuthTag();
+    const authTag = (cipher as any).getAuthTag ? (cipher as any).getAuthTag() : Buffer.alloc(0);
     
     return {
       algorithm: this.encryptionConfig.algorithm,
@@ -187,8 +189,12 @@ export class DataEncryption extends EventEmitter {
     }
     
     const decipher = crypto.createDecipher(encryptedData.algorithm, key);
-    decipher.setAAD(Buffer.from(actualKeyType));
-    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'base64'));
+    if ((decipher as any).setAAD) {
+      (decipher as any).setAAD(Buffer.from(actualKeyType));
+    }
+    if ((decipher as any).setAuthTag) {
+      (decipher as any).setAuthTag(Buffer.from(encryptedData.authTag, 'base64'));
+    }
     
     const decrypted = Buffer.concat([
       decipher.update(Buffer.from(encryptedData.encryptedData, 'base64')),

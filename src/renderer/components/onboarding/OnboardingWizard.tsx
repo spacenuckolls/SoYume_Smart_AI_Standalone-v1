@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import './OnboardingWizard.css';
+import '../../types/electron';
 
 interface OnboardingStep {
   id: string;

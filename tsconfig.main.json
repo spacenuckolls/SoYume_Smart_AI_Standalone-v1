@@ -1,12 +1,21 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "./dist/main",
     "target": "ES2020",
-    "module": "commonjs"
+    "module": "CommonJS",
+    "lib": ["ES2020"],
+    "outDir": "./dist/main",
+    "rootDir": "./src/main",
+    "types": ["node", "electron"]
   },
   "include": [
     "src/main/**/*",
     "src/shared/**/*"
+  ],
+  "exclude": [
+    "src/renderer/**/*",
+    "src/test/**/*",
+    "**/*.test.ts",
+    "**/*.spec.ts"
   ]
 }

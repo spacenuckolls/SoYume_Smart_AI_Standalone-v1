@@ -2,7 +2,6 @@ import { EventEmitter } from 'events';
 import { BrowserWindow, ipcMain } from 'electron';
 import { ConfigManager } from '../config/ConfigManager';
 import * as path from 'path';
-import * as fs from 'fs/promises';
 
 interface OnboardingStep {
   id: string;
@@ -190,8 +189,8 @@ export class OnboardingManager extends EventEmitter {
    */
   async isOnboardingRequired(): Promise<boolean> {
     try {
-      const config = await this.configManager.getConfig();
-      return !config.onboardingCompleted;
+      const config = this.configManager.getAll();
+      return !(config as any).onboardingCompleted;
     } catch (error) {
       console.error('Failed to check onboarding requirement:', error);
       return true; // Default to requiring onboarding
@@ -234,11 +233,12 @@ export class OnboardingManager extends EventEmitter {
       this.progress.currentStep = this.onboardingSteps.length;
 
       // Save onboarding completion
-      await this.configManager.updateConfig({
+      this.configManager.setMultiple({
+        ...(data.userPreferences || {}),
+        ...(this.configManager.getAll() as any),
         onboardingCompleted: true,
-        onboardingCompletedAt: this.progress.completedAt.toISOString(),
-        userPreferences: data.userPreferences || {}
-      });
+        onboardingCompletedAt: this.progress.completedAt.toISOString()
+      } as any);
 
       // Save progress
       await this.saveProgress();
@@ -318,11 +318,16 @@ export class OnboardingManager extends EventEmitter {
    */
   async saveUserSettings(settings: UserPreferences): Promise<boolean> {
     try {
-      await this.configManager.updateConfig({
-        userPreferences: settings,
-        theme: settings.theme,
-        accessibility: settings.accessibility
-      });
+      // Update accessibility settings
+      if (settings.accessibility) {
+        this.configManager.updateAccessibilitySettings({
+          ...settings.accessibility,
+          customLayout: {
+            ...this.configManager.getAccessibilitySettings().customLayout,
+            theme: settings.theme
+          }
+        });
+      }
 
       // Apply settings immediately
       this.emit('settingsUpdated', settings);
@@ -359,7 +364,7 @@ export class OnboardingManager extends EventEmitter {
    */
   private async loadProgress(): Promise<void> {
     try {
-      const config = await this.configManager.getConfig();
+      const config = this.configManager.getAll() as any;
       if (config.onboardingProgress) {
         this.progress = {
           ...this.progress,
@@ -387,10 +392,12 @@ export class OnboardingManager extends EventEmitter {
    */
   private async saveProgress(): Promise<void> {
     try {
-      await this.configManager.updateConfig({
+      const currentConfig = this.configManager.getAll() as any;
+      this.configManager.setMultiple({
+        ...currentConfig,
         onboardingProgress: this.progress,
         tutorialProgress: this.tutorialProgress
-      });
+      } as any);
     } catch (error) {
       console.error('Failed to save onboarding progress:', error);
     }
@@ -455,10 +462,12 @@ export class OnboardingManager extends EventEmitter {
         step.completed = false;
       });
 
-      await this.configManager.updateConfig({
+      const currentConfig = this.configManager.getAll() as any;
+      this.configManager.setMultiple({
+        ...currentConfig,
         onboardingCompleted: false,
         onboardingProgress: this.progress
-      });
+      } as any);
 
       this.isOnboardingActive = false;
       this.emit('onboardingReset');

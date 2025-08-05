@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import './TutorialSystem.css';
+import '../../types/electron';
 
 interface TutorialStep {
   id: string;

@@ -9,6 +9,15 @@ export interface Story {
   analysisCache: AnalysisCache;
   createdAt: Date;
   updatedAt: Date;
+  // Additional properties for UI components
+  author?: string;
+  summary?: string;
+  status?: 'draft' | 'in-progress' | 'completed' | 'published';
+  favorite?: boolean;
+  lastModified?: Date;
+  wordCount?: number;
+  targetWordCount?: number;
+  scenes?: Scene[];
 }
 
 export interface Character {
@@ -259,4 +268,24 @@ export interface ChapterAnalysis {
   characterFocus: string[]; // Character IDs
   plotAdvancement: number; // 1-10
   suggestions: string[];
+}// Additi
+onal types for StoryProjectManager
+export interface StoryTemplate {
+  id: string;
+  name: string;
+  description: string;
+  genre: Genre[];
+  structure: StoryStructure;
+  defaultCharacters?: Character[];
+  defaultChapters?: Partial<Chapter>[];
+}
+
+export interface ProjectStats {
+  totalWords: number;
+  totalCharacters: number;
+  totalScenes: number;
+  completionPercentage: number;
+  lastModified: Date;
+  averageWordsPerDay?: number;
+  estimatedCompletionDate?: Date;
 }
