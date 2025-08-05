@@ -1,0 +1,404 @@
+syntax = "proto3";
+
+package ai_creative_assistant;
+
+// Story Service
+service StoryService {
+  rpc GetStory(GetStoryRequest) returns (GetStoryResponse);
+  rpc CreateStory(CreateStoryRequest) returns (CreateStoryResponse);
+  rpc UpdateStory(UpdateStoryRequest) returns (UpdateStoryResponse);
+  rpc DeleteStory(DeleteStoryRequest) returns (DeleteStoryResponse);
+  rpc ListStories(ListStoriesRequest) returns (ListStoriesResponse);
+  rpc SearchStories(SearchStoriesRequest) returns (SearchStoriesResponse);
+}
+
+// AI Service
+service AIService {
+  rpc GenerateText(GenerateTextRequest) returns (GenerateTextResponse);
+  rpc AnalyzeStory(AnalyzeStoryRequest) returns (AnalyzeStoryResponse);
+  rpc AnalyzeScene(AnalyzeSceneRequest) returns (AnalyzeSceneResponse);
+  rpc AnalyzeCharacter(AnalyzeCharacterRequest) returns (AnalyzeCharacterResponse);
+  rpc GenerateSuggestions(GenerateSuggestionsRequest) returns (GenerateSuggestionsResponse);
+  rpc StreamGeneration(StreamGenerationRequest) returns (stream StreamGenerationResponse);
+}
+
+// Plugin Service
+service PluginService {
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  rpc GetPlugin(GetPluginRequest) returns (GetPluginResponse);
+  rpc ActivatePlugin(ActivatePluginRequest) returns (ActivatePluginResponse);
+  rpc DeactivatePlugin(DeactivatePluginRequest) returns (DeactivatePluginResponse);
+  rpc InstallPlugin(InstallPluginRequest) returns (InstallPluginResponse);
+  rpc UninstallPlugin(UninstallPluginRequest) returns (UninstallPluginResponse);
+}
+
+// Data Models
+message Story {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string genre = 4;
+  string created_at = 5;
+  string updated_at = 6;
+  repeated Scene scenes = 7;
+  repeated Character characters = 8;
+  map<string, string> metadata = 9;
+}
+
+message Scene {
+  string id = 1;
+  string title = 2;
+  string content = 3;
+  int32 order = 4;
+  string created_at = 5;
+  string updated_at = 6;
+  map<string, string> metadata = 7;
+}
+
+message Character {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string role = 4;
+  repeated string traits = 5;
+  string backstory = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  map<string, string> metadata = 9;
+}
+
+message Plugin {
+  string id = 1;
+  string name = 2;
+  string version = 3;
+  string description = 4;
+  string author = 5;
+  string homepage = 6;
+  repeated PluginPermission permissions = 7;
+  bool is_active = 8;
+  bool is_loaded = 9;
+  string load_time = 10;
+  int32 error_count = 11;
+  string last_error = 12;
+}
+
+message PluginPermission {
+  string type = 1;
+  repeated string scope = 2;
+  string description = 3;
+}
+
+// Story Service Messages
+message GetStoryRequest {
+  string id = 1;
+}
+
+message GetStoryResponse {
+  Story story = 1;
+}
+
+message CreateStoryRequest {
+  Story story = 1;
+}
+
+message CreateStoryResponse {
+  Story story = 1;
+}
+
+message UpdateStoryRequest {
+  Story story = 1;
+}
+
+message UpdateStoryResponse {
+  Story story = 1;
+}
+
+message DeleteStoryRequest {
+  string id = 1;
+}
+
+message DeleteStoryResponse {
+  bool success = 1;
+}
+
+message ListStoriesRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string sort_by = 3;
+  string sort_order = 4;
+}
+
+message ListStoriesResponse {
+  repeated Story stories = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message SearchStoriesRequest {
+  string query = 1;
+  int32 limit = 2;
+  repeated string fields = 3;
+}
+
+message SearchStoriesResponse {
+  repeated Story stories = 1;
+  int32 total_count = 2;
+}
+
+// AI Service Messages
+message GenerateTextRequest {
+  string prompt = 1;
+  GenerationOptions options = 2;
+}
+
+message GenerateTextResponse {
+  string text = 1;
+  GenerationMetadata metadata = 2;
+}
+
+message GenerationOptions {
+  int32 max_tokens = 1;
+  double temperature = 2;
+  double top_p = 3;
+  int32 top_k = 4;
+  repeated string stop_sequences = 5;
+  string model = 6;
+  map<string, string> parameters = 7;
+}
+
+message GenerationMetadata {
+  int32 tokens_used = 1;
+  double processing_time = 2;
+  string model_used = 3;
+  double confidence = 4;
+}
+
+message AnalyzeStoryRequest {
+  Story story = 1;
+  AnalysisOptions options = 2;
+}
+
+message AnalyzeStoryResponse {
+  StoryAnalysis analysis = 1;
+}
+
+message AnalyzeSceneRequest {
+  Scene scene = 1;
+  AnalysisOptions options = 2;
+}
+
+message AnalyzeSceneResponse {
+  SceneAnalysis analysis = 1;
+}
+
+message AnalyzeCharacterRequest {
+  Character character = 1;
+  AnalysisOptions options = 2;
+}
+
+message AnalyzeCharacterResponse {
+  CharacterAnalysis analysis = 1;
+}
+
+message AnalysisOptions {
+  repeated string analysis_types = 1;
+  string depth = 2;
+  bool include_suggestions = 3;
+  map<string, string> parameters = 4;
+}
+
+message StoryAnalysis {
+  StructureAnalysis structure = 1;
+  PacingAnalysis pacing = 2;
+  repeated PlotHole plot_holes = 3;
+  repeated ForeshadowingPattern foreshadowing = 4;
+  repeated Theme themes = 5;
+  double overall_score = 6;
+  repeated Suggestion suggestions = 7;
+}
+
+message SceneAnalysis {
+  double tension_level = 1;
+  double emotional_intensity = 2;
+  double action_level = 3;
+  string pacing = 4;
+  repeated string mood_tags = 5;
+  repeated Suggestion suggestions = 6;
+}
+
+message CharacterAnalysis {
+  double development_score = 1;
+  double consistency_score = 2;
+  repeated string personality_traits = 3;
+  repeated string relationships = 4;
+  repeated Suggestion suggestions = 5;
+}
+
+message StructureAnalysis {
+  string structure_type = 1;
+  double adherence_score = 2;
+  repeated PlotPoint plot_points = 3;
+  repeated string missing_elements = 4;
+}
+
+message PacingAnalysis {
+  string overall_pacing = 1;
+  double pacing_score = 2;
+  repeated PacingIssue issues = 3;
+  repeated double tension_curve = 4;
+}
+
+message PlotHole {
+  string id = 1;
+  string description = 2;
+  string severity = 3;
+  repeated string affected_scenes = 4;
+  repeated string suggestions = 5;
+}
+
+message ForeshadowingPattern {
+  string id = 1;
+  string type = 2;
+  string setup_scene = 3;
+  string payoff_scene = 4;
+  double strength = 5;
+  double effectiveness = 6;
+}
+
+message Theme {
+  string name = 1;
+  double strength = 2;
+  repeated string supporting_scenes = 3;
+  string development = 4;
+}
+
+message PlotPoint {
+  string name = 1;
+  int32 position = 2;
+  double confidence = 3;
+  bool missing = 4;
+}
+
+message PacingIssue {
+  string type = 1;
+  string description = 2;
+  repeated string affected_scenes = 3;
+  string severity = 4;
+}
+
+message Suggestion {
+  string id = 1;
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  string suggestion = 5;
+  double confidence = 6;
+  string priority = 7;
+  repeated string implementation_steps = 8;
+}
+
+message GenerateSuggestionsRequest {
+  map<string, string> context = 1;
+  SuggestionOptions options = 2;
+}
+
+message GenerateSuggestionsResponse {
+  repeated Suggestion suggestions = 1;
+}
+
+message SuggestionOptions {
+  repeated string types = 1;
+  int32 max_suggestions = 2;
+  double min_confidence = 3;
+  string priority_filter = 4;
+}
+
+message StreamGenerationRequest {
+  string prompt = 1;
+  GenerationOptions options = 2;
+}
+
+message StreamGenerationResponse {
+  string token = 1;
+  bool is_complete = 2;
+  GenerationMetadata metadata = 3;
+}
+
+// Plugin Service Messages
+message ListPluginsRequest {
+  bool active_only = 1;
+  string category = 2;
+}
+
+message ListPluginsResponse {
+  repeated Plugin plugins = 1;
+}
+
+message GetPluginRequest {
+  string id = 1;
+}
+
+message GetPluginResponse {
+  Plugin plugin = 1;
+}
+
+message ActivatePluginRequest {
+  string id = 1;
+}
+
+message ActivatePluginResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeactivatePluginRequest {
+  string id = 1;
+}
+
+message DeactivatePluginResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message InstallPluginRequest {
+  bytes package = 1;
+  InstallOptions options = 2;
+}
+
+message InstallPluginResponse {
+  Plugin plugin = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+message InstallOptions {
+  bool auto_activate = 1;
+  bool validate_permissions = 2;
+  bool force_install = 3;
+}
+
+message UninstallPluginRequest {
+  string id = 1;
+  bool force = 2;
+}
+
+message UninstallPluginResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Common Messages
+message Error {
+  int32 code = 1;
+  string message = 2;
+  string details = 3;
+  string trace_id = 4;
+}
+
+message Metadata {
+  string request_id = 1;
+  string timestamp = 2;
+  string version = 3;
+  map<string, string> headers = 4;
+}
