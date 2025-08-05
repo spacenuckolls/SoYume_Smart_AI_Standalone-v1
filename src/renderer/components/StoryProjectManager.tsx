@@ -12,8 +12,17 @@ const Button = ({ children, onClick, type, ...props }: any) => (
 const Input = ({ onChange, ...props }: any) => (
   <input onChange={(e) => onChange?.(e.target.value)} {...props} />
 );
+Input.Search = ({ onChange, ...props }: any) => (
+  <input type="search" onChange={(e) => onChange?.(e.target.value)} {...props} />
+);
+Input.TextArea = ({ onChange, ...props }: any) => (
+  <textarea onChange={(e) => onChange?.(e.target.value)} {...props} />
+);
 const Select = ({ children, onChange, ...props }: any) => (
   <select onChange={(e) => onChange?.(e.target.value)} {...props}>{children}</select>
+);
+Select.Option = ({ children, value, ...props }: any) => (
+  <option value={value} {...props}>{children}</option>
 );
 const Row = ({ children, ...props }: any) => <div className="row" {...props}>{children}</div>;
 const Col = ({ children, ...props }: any) => <div className="col" {...props}>{children}</div>;

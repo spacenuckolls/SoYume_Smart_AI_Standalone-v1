@@ -132,8 +132,8 @@ export class PlotHoleDetector {
     
     // Extract locations
     const locationPatterns = [
-      /(?:in|at|to|from)\\s+(?:the\\s+)?([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)/g,
-      /\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)\\s+(?:building|house|room|city|town|forest|mountain)/g
+      /(?:in|at|to|from)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+      /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:building|house|room|city|town|forest|mountain)/g
     ];
     
     for (const pattern of locationPatterns) {

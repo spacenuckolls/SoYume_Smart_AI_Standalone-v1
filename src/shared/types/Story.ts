@@ -268,8 +268,9 @@ export interface ChapterAnalysis {
   characterFocus: string[]; // Character IDs
   plotAdvancement: number; // 1-10
   suggestions: string[];
-}// Additi
-onal types for StoryProjectManager
+}
+
+// Additional types for StoryProjectManager
 export interface StoryTemplate {
   id: string;
   name: string;
