@@ -1,550 +1,1143 @@
-import { describe, test, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { CredentialManager } from '../../src/main/security/CredentialManager';
+import { DataEncryption } from '../../src/main/security/DataEncryption';
+import { PrivacyAuditLogger } from '../../src/main/security/PrivacyAuditLogger';
+import { ConsentManager } from '../../src/main/security/ConsentManager';
+import { PluginSandbox } from '../../src/main/security/PluginSandbox';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as crypto from 'crypto';
 
-describe('Security Tests', () => {
-  let mockSecurityContext: any;
+describe('Security System Tests', () => {
+  let tempDir: string;
   
-  beforeEach(() => {
-    mockSecurityContext = {
-      currentUser: null,
-      permissions: [],
-      sessionToken: null,
-      encryptionKey: 'mock-encryption-key'
-    };
+  beforeEach(async () => {
+    // Create temporary directory for tests
+    tempDir = path.join(__dirname, 'temp', crypto.randomUUID());
+    await fs.mkdir(tempDir, { recursive: true });
   });
   
-  afterEach(() => {
-    // Clear security context
-    mockSecurityContext = null;
+  afterEach(async () => {
+    // Cleanup temporary directory
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      // Ignore cleanup errors
+    }
   });
-  
-  describe('Input Validation Security', () => {
-    test('should prevent XSS attacks in story content', () => {
-      const maliciousInputs = [
-        '<script>alert("XSS")</script>',
-        'javascript:alert("XSS")',
-        '<img src="x" onerror="alert(\'XSS\')">',
-        '<svg onload="alert(\'XSS\')">',
-        '"><script>alert("XSS")</script>',
-        '\';alert("XSS");//'
-      ];
-      
-      maliciousInputs.forEach(input => {
-        // Mock input sanitization
-        const sanitized = input
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-          .replace(/javascript:/gi, '')
-          .replace(/on\w+="[^"]*"/gi, '')
-          .replace(/on\w+='[^']*'/gi, '');
-        
-        expect(sanitized).not.toContain('<script>');
-        expect(sanitized).not.toContain('javascript:');
-        expect(sanitized).not.toContain('onerror=');
-        expect(sanitized).not.toContain('onload=');
+
+  describe('CredentialManager', () => {
+    let credentialManager: CredentialManager;
+    
+    beforeEach(() => {
+      credentialManager = new CredentialManager({
+        serviceName: 'test-service',
+        requireMasterPassword: false
       });
     });
     
-    test('should validate story title length and content', () => {
-      const testCases = [
-        { title: '', valid: false, reason: 'empty title' },
-        { title: 'A'.repeat(1000), valid: false, reason: 'too long' },
-        { title: 'Valid Title', valid: true, reason: 'valid length' },
-        { title: '<script>alert("xss")</script>', valid: false, reason: 'contains script' },
-        { title: 'Title with émojis 🎭', valid: true, reason: 'unicode characters' }
-      ];
-      
-      testCases.forEach(({ title, valid, reason }) => {
-        const isValid = title.length > 0 && 
-                        title.length <= 200 && 
-                        !title.includes('<script>') &&
-                        !title.includes('javascript:');
-        
-        expect(isValid).toBe(valid);
-      });
+    afterEach(() => {
+      credentialManager.destroy();
     });
-    
-    test('should sanitize character descriptions', () => {
-      const unsafeDescription = `
-        <p>Character description</p>
-        <script>maliciousCode()</script>
-        <img src="x" onerror="alert('xss')">
-        Normal text content
-      `;
-      
-      // Mock sanitization
-      const sanitized = unsafeDescription
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-        .replace(/<img[^>]*onerror[^>]*>/gi, '')
-        .trim();
-      
-      expect(sanitized).not.toContain('<script>');
-      expect(sanitized).not.toContain('onerror=');
-      expect(sanitized).toContain('Character description');
-      expect(sanitized).toContain('Normal text content');
-    });
-    
-    test('should validate file upload security', () => {
-      const testFiles = [
-        { name: 'story.txt', type: 'text/plain', valid: true },
-        { name: 'image.jpg', type: 'image/jpeg', valid: true },
-        { name: 'malware.exe', type: 'application/x-executable', valid: false },
-        { name: 'script.js', type: 'application/javascript', valid: false },
-        { name: 'document.pdf', type: 'application/pdf', valid: true },
-        { name: 'archive.zip', type: 'application/zip', valid: false }
-      ];
-      
-      const allowedTypes = ['text/plain', 'image/jpeg', 'image/png', 'application/pdf'];
-      const maxFileSize = 10 * 1024 * 1024; // 10MB
-      
-      testFiles.forEach(file => {
-        const isValidType = allowedTypes.includes(file.type);
-        const isValidSize = true; // Mock size check
-        const isValid = isValidType && isValidSize;
-        
-        expect(isValid).toBe(file.valid);
-      });
-    });
-  });
-  
-  describe('Authentication and Authorization', () => {
-    test('should handle session management securely', () => {
-      // Mock session creation
-      const createSession = (userId: string) => {
-        const sessionToken = `session_${userId}_${Date.now()}`;
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-        
-        return {
-          token: sessionToken,
-          userId,
-          expiresAt,
-          isValid: () => new Date() < expiresAt
-        };
+
+    it('should store and retrieve API key credentials', async () => {
+      const credential = {
+        type: 'api-key' as const,
+        data: {
+          apiKey: 'test-api-key-12345',
+          baseUrl: 'https://api.example.com'
+        }
       };
       
-      const session = createSession('user123');
+      await credentialManager.storeCredential('openai', credential);
+      const retrieved = await credentialManager.getCredential('openai');
       
-      expect(session.token).toMatch(/^session_user123_\d+$/);
-      expect(session.userId).toBe('user123');
-      expect(session.isValid()).toBe(true);
-      
-      // Test expired session
-      const expiredSession = {
-        ...session,
-        expiresAt: new Date(Date.now() - 1000) // 1 second ago
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.type).toBe('api-key');
+      expect(retrieved!.data.apiKey).toBe('test-api-key-12345');
+      expect(retrieved!.data.baseUrl).toBe('https://api.example.com');
+    });
+
+    it('should store and retrieve OAuth credentials', async () => {
+      const credential = {
+        type: 'oauth' as const,
+        data: {
+          accessToken: 'access-token-123',
+          refreshToken: 'refresh-token-456',
+          expiresAt: Date.now() + 3600000
+        }
       };
       
-      expect(expiredSession.isValid()).toBe(false);
-    });
-    
-    test('should validate API key security', () => {
-      const testApiKeys = [
-        { key: '', valid: false, reason: 'empty key' },
-        { key: '123', valid: false, reason: 'too short' },
-        { key: 'sk-' + 'a'.repeat(48), valid: true, reason: 'valid OpenAI format' },
-        { key: 'claude-' + 'b'.repeat(40), valid: true, reason: 'valid Anthropic format' },
-        { key: 'plain-text-key', valid: false, reason: 'no proper prefix' }
-      ];
+      await credentialManager.storeCredential('google', credential);
+      const retrieved = await credentialManager.getCredential('google');
       
-      testApiKeys.forEach(({ key, valid, reason }) => {
-        const isValid = key.length >= 20 && 
-                        (key.startsWith('sk-') || key.startsWith('claude-') || key.startsWith('api-'));
-        
-        expect(isValid).toBe(valid);
-      });
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.type).toBe('oauth');
+      expect(retrieved!.data.accessToken).toBe('access-token-123');
+      expect(retrieved!.data.refreshToken).toBe('refresh-token-456');
     });
-    
-    test('should protect sensitive configuration data', () => {
-      const sensitiveConfig = {
-        apiKeys: {
-          openai: 'sk-sensitive-key',
-          anthropic: 'claude-sensitive-key'
+
+    it('should handle credential expiration', async () => {
+      const credential = {
+        type: 'api-key' as const,
+        data: {
+          apiKey: 'expired-key'
+        }
+      };
+      
+      // Mock expired credential
+      const credentialManager = new CredentialManager({
+        serviceName: 'test-service',
+        securityPolicy: {
+          maxCredentialAge: 1 // 1ms for immediate expiration
+        }
+      });
+      
+      await credentialManager.storeCredential('expired-provider', credential);
+      
+      // Wait for expiration
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      const retrieved = await credentialManager.getCredential('expired-provider');
+      expect(retrieved).toBeNull();
+      
+      credentialManager.destroy();
+    });
+
+    it('should validate credential format', async () => {
+      const invalidCredential = {
+        type: 'api-key' as const,
+        data: {
+          apiKey: '' // Empty API key should be invalid
+        }
+      };
+      
+      await expect(
+        credentialManager.storeCredential('invalid', invalidCredential)
+      ).rejects.toThrow('API key is too short or missing');
+    });
+
+    it('should list stored credentials', async () => {
+      const credentials = [
+        {
+          type: 'api-key' as const,
+          data: { apiKey: 'key1' }
         },
-        database: {
-          password: 'db-password'
-        },
-        encryption: {
-          key: 'encryption-key'
+        {
+          type: 'oauth' as const,
+          data: { accessToken: 'token1', refreshToken: 'refresh1' }
         }
-      };
-      
-      // Mock configuration masking
-      const maskSensitiveData = (config: any) => {
-        const masked = JSON.parse(JSON.stringify(config));
-        
-        if (masked.apiKeys) {
-          Object.keys(masked.apiKeys).forEach(key => {
-            if (masked.apiKeys[key]) {
-              masked.apiKeys[key] = '***masked***';
-            }
-          });
-        }
-        
-        if (masked.database?.password) {
-          masked.database.password = '***masked***';
-        }
-        
-        if (masked.encryption?.key) {
-          masked.encryption.key = '***masked***';
-        }
-        
-        return masked;
-      };
-      
-      const maskedConfig = maskSensitiveData(sensitiveConfig);
-      
-      expect(maskedConfig.apiKeys.openai).toBe('***masked***');
-      expect(maskedConfig.apiKeys.anthropic).toBe('***masked***');
-      expect(maskedConfig.database.password).toBe('***masked***');
-      expect(maskedConfig.encryption.key).toBe('***masked***');
-    });
-  });
-  
-  describe('Data Encryption and Storage', () => {
-    test('should encrypt sensitive story data', () => {
-      const sensitiveStory = {
-        id: 'story-123',
-        title: 'Private Story',
-        content: 'This is sensitive story content',
-        isPrivate: true
-      };
-      
-      // Mock encryption
-      const encrypt = (data: string, key: string) => {
-        // Simple mock encryption (in real implementation, use proper crypto)
-        return Buffer.from(data).toString('base64') + '_encrypted_' + key.slice(0, 8);
-      };
-      
-      const decrypt = (encryptedData: string, key: string) => {
-        // Simple mock decryption
-        const parts = encryptedData.split('_encrypted_');
-        if (parts.length === 2 && parts[1] === key.slice(0, 8)) {
-          return Buffer.from(parts[0], 'base64').toString();
-        }
-        throw new Error('Decryption failed');
-      };
-      
-      const encryptedContent = encrypt(sensitiveStory.content, mockSecurityContext.encryptionKey);
-      const decryptedContent = decrypt(encryptedContent, mockSecurityContext.encryptionKey);
-      
-      expect(encryptedContent).not.toBe(sensitiveStory.content);
-      expect(encryptedContent).toContain('_encrypted_');
-      expect(decryptedContent).toBe(sensitiveStory.content);
-    });
-    
-    test('should secure local storage data', () => {
-      const sensitiveData = {
-        userPreferences: { theme: 'dark' },
-        recentFiles: ['story1.txt', 'story2.txt'],
-        apiKeys: { openai: 'sk-secret-key' }
-      };
-      
-      // Mock secure storage
-      const secureStorage = {
-        set: (key: string, value: any) => {
-          const encrypted = JSON.stringify(value) + '_secure';
-          return { key, encrypted };
-        },
-        
-        get: (key: string, encrypted: string) => {
-          if (encrypted.endsWith('_secure')) {
-            return JSON.parse(encrypted.replace('_secure', ''));
-          }
-          throw new Error('Invalid secure storage data');
-        }
-      };
-      
-      const stored = secureStorage.set('user-data', sensitiveData);
-      const retrieved = secureStorage.get('user-data', stored.encrypted);
-      
-      expect(stored.encrypted).toContain('_secure');
-      expect(retrieved).toEqual(sensitiveData);
-    });
-    
-    test('should handle encryption key rotation', () => {
-      const data = 'sensitive information';
-      const oldKey = 'old-encryption-key';
-      const newKey = 'new-encryption-key';
-      
-      // Mock key rotation
-      const rotateEncryption = (encryptedData: string, oldKey: string, newKey: string) => {
-        // Decrypt with old key
-        const decrypted = Buffer.from(encryptedData.split('_')[0], 'base64').toString();
-        
-        // Re-encrypt with new key
-        return Buffer.from(decrypted).toString('base64') + '_' + newKey.slice(0, 8);
-      };
-      
-      const originalEncrypted = Buffer.from(data).toString('base64') + '_' + oldKey.slice(0, 8);
-      const reEncrypted = rotateEncryption(originalEncrypted, oldKey, newKey);
-      
-      expect(reEncrypted).not.toBe(originalEncrypted);
-      expect(reEncrypted).toContain(newKey.slice(0, 8));
-    });
-  });
-  
-  describe('Network Security', () => {
-    test('should validate HTTPS connections', () => {
-      const testUrls = [
-        { url: 'https://api.openai.com', secure: true },
-        { url: 'http://api.openai.com', secure: false },
-        { url: 'https://api.anthropic.com', secure: true },
-        { url: 'http://localhost:8080', secure: false }, // Local dev is OK
-        { url: 'ftp://example.com', secure: false }
       ];
       
-      testUrls.forEach(({ url, secure }) => {
-        const isSecure = url.startsWith('https://') || url.startsWith('http://localhost');
-        expect(isSecure).toBe(secure || url.includes('localhost'));
+      await credentialManager.storeCredential('provider1', credentials[0]);
+      await credentialManager.storeCredential('provider2', credentials[1]);
+      
+      const list = await credentialManager.listCredentials();
+      
+      expect(list).toHaveLength(2);
+      expect(list.map(c => c.providerId)).toContain('provider1');
+      expect(list.map(c => c.providerId)).toContain('provider2');
+    });
+
+    it('should remove credentials', async () => {
+      const credential = {
+        type: 'api-key' as const,
+        data: { apiKey: 'to-be-removed' }
+      };
+      
+      await credentialManager.storeCredential('removable', credential);
+      
+      let retrieved = await credentialManager.getCredential('removable');
+      expect(retrieved).toBeDefined();
+      
+      const removed = await credentialManager.removeCredential('removable');
+      expect(removed).toBe(true);
+      
+      retrieved = await credentialManager.getCredential('removable');
+      expect(retrieved).toBeNull();
+    });
+
+    it('should export and import credentials', async () => {
+      const credential = {
+        type: 'api-key' as const,
+        data: { apiKey: 'export-test-key' }
+      };
+      
+      await credentialManager.storeCredential('export-test', credential);
+      
+      const exportData = await credentialManager.exportCredentials('export-password-123');
+      expect(exportData).toBeDefined();
+      
+      // Clear credentials
+      await credentialManager.clearAllCredentials();
+      
+      // Import back
+      const importedCount = await credentialManager.importCredentials(exportData, 'export-password-123');
+      expect(importedCount).toBe(1);
+      
+      const retrieved = await credentialManager.getCredential('export-test');
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.data.apiKey).toBe('export-test-key');
+    });
+
+    it('should handle master password', async () => {
+      const credentialManager = new CredentialManager({
+        serviceName: 'test-master-password',
+        requireMasterPassword: true
+      });
+      
+      await credentialManager.setMasterPassword('strong-master-password-123');
+      
+      const credential = {
+        type: 'api-key' as const,
+        data: { apiKey: 'master-protected-key' }
+      };
+      
+      await credentialManager.storeCredential('protected', credential);
+      const retrieved = await credentialManager.getCredential('protected');
+      
+      expect(retrieved).toBeDefined();
+      expect(retrieved!.data.apiKey).toBe('master-protected-key');
+      
+      credentialManager.destroy();
+    });
+
+    it('should reject weak master passwords', async () => {
+      await expect(
+        credentialManager.setMasterPassword('weak')
+      ).rejects.toThrow('Master password is too weak');
+    });
+
+    it('should provide security status', () => {
+      const status = credentialManager.getSecurityStatus();
+      
+      expect(status).toHaveProperty('encryptionInitialized');
+      expect(status).toHaveProperty('masterPasswordSet');
+      expect(status).toHaveProperty('credentialCount');
+      expect(status).toHaveProperty('securityPolicy');
+      expect(status).toHaveProperty('recommendations');
+      expect(Array.isArray(status.recommendations)).toBe(true);
+    });
+  });
+
+  describe('DataEncryption', () => {
+    let dataEncryption: DataEncryption;
+    
+    beforeEach(() => {
+      dataEncryption = new DataEncryption({
+        dataPath: path.join(tempDir, 'encrypted')
       });
     });
     
-    test('should implement request rate limiting', () => {
-      const rateLimiter = {
-        requests: new Map<string, number[]>(),
-        
-        isAllowed: (clientId: string, maxRequests: number, windowMs: number) => {
-          const now = Date.now();
-          const requests = rateLimiter.requests.get(clientId) || [];
-          
-          // Remove old requests outside the window
-          const validRequests = requests.filter(time => now - time < windowMs);
-          
-          if (validRequests.length >= maxRequests) {
-            return false;
-          }
-          
-          validRequests.push(now);
-          rateLimiter.requests.set(clientId, validRequests);
-          return true;
-        }
+    afterEach(() => {
+      dataEncryption.destroy();
+    });
+
+    it('should encrypt and decrypt data', async () => {
+      await dataEncryption.setUserKey('test-password-123');
+      
+      const testData = 'This is sensitive test data';
+      const encrypted = await dataEncryption.encryptData(testData, 'user-data');
+      
+      expect(encrypted).toHaveProperty('encryptedData');
+      expect(encrypted).toHaveProperty('iv');
+      expect(encrypted).toHaveProperty('authTag');
+      expect(encrypted.keyType).toBe('user-data');
+      
+      const decrypted = await dataEncryption.decryptData(encrypted);
+      expect(decrypted).toBe(testData);
+    });
+
+    it('should encrypt and decrypt files', async () => {
+      await dataEncryption.setUserKey('file-encryption-password');
+      
+      const testFilePath = path.join(tempDir, 'test-file.txt');
+      const testContent = 'This is test file content for encryption';
+      
+      await fs.writeFile(testFilePath, testContent);
+      
+      const encryptedFilePath = await dataEncryption.encryptFile(testFilePath, 'user-data');
+      expect(encryptedFilePath).toBe(`${testFilePath}.encrypted`);
+      
+      const decryptedFilePath = await dataEncryption.decryptFile(encryptedFilePath);
+      const decryptedContent = await fs.readFile(decryptedFilePath, 'utf8');
+      
+      expect(decryptedContent).toBe(testContent);
+    });
+
+    it('should verify user key', async () => {
+      const password = 'verification-test-password';
+      await dataEncryption.setUserKey(password);
+      
+      const isValid = await dataEncryption.verifyUserKey(password);
+      expect(isValid).toBe(true);
+      
+      const isInvalid = await dataEncryption.verifyUserKey('wrong-password');
+      expect(isInvalid).toBe(false);
+    });
+
+    it('should change user key', async () => {
+      const oldPassword = 'old-password-123';
+      const newPassword = 'new-password-456';
+      
+      await dataEncryption.setUserKey(oldPassword);
+      
+      const testData = 'Data encrypted with old key';
+      const encrypted = await dataEncryption.encryptData(testData, 'user-data');
+      
+      await dataEncryption.changeUserKey(oldPassword, newPassword);
+      
+      // Should still be able to decrypt with new key
+      const decrypted = await dataEncryption.decryptData(encrypted);
+      expect(decrypted).toBe(testData);
+      
+      // Old password should no longer work
+      const oldKeyValid = await dataEncryption.verifyUserKey(oldPassword);
+      expect(oldKeyValid).toBe(false);
+      
+      // New password should work
+      const newKeyValid = await dataEncryption.verifyUserKey(newPassword);
+      expect(newKeyValid).toBe(true);
+    });
+
+    it('should reject weak passwords', async () => {
+      await expect(
+        dataEncryption.setUserKey('weak')
+      ).rejects.toThrow('Password is too weak');
+    });
+
+    it('should handle key hints', async () => {
+      const password = 'password-with-hint';
+      const hint = 'My favorite color and birth year';
+      
+      await dataEncryption.setUserKey(password, hint);
+      
+      const retrievedHint = await dataEncryption.getKeyHint();
+      expect(retrievedHint).toBe(hint);
+    });
+
+    it('should provide encryption status', () => {
+      const status = dataEncryption.getEncryptionStatus();
+      
+      expect(status).toHaveProperty('userKeySet');
+      expect(status).toHaveProperty('systemKeySet');
+      expect(status).toHaveProperty('derivedKeysGenerated');
+      expect(status).toHaveProperty('encryptionConfig');
+      expect(status).toHaveProperty('recommendations');
+      expect(Array.isArray(status.recommendations)).toBe(true);
+    });
+
+    it('should export and import encrypted data', async () => {
+      await dataEncryption.setUserKey('export-import-password');
+      
+      // Create some encrypted data
+      const testData1 = 'Test data 1';
+      const testData2 = 'Test data 2';
+      
+      await dataEncryption.encryptData(testData1, 'user-data');
+      await dataEncryption.encryptData(testData2, 'cache-data');
+      
+      const exportPath = path.join(tempDir, 'export.json');
+      await dataEncryption.exportEncryptedData(exportPath, ['user-data', 'cache-data']);
+      
+      // Verify export file exists
+      const exportExists = await fs.access(exportPath).then(() => true).catch(() => false);
+      expect(exportExists).toBe(true);
+      
+      // Import data
+      const importedCount = await dataEncryption.importEncryptedData(exportPath);
+      expect(importedCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('PrivacyAuditLogger', () => {
+    let auditLogger: PrivacyAuditLogger;
+    
+    beforeEach(() => {
+      auditLogger = new PrivacyAuditLogger({
+        logPath: path.join(tempDir, 'audit-logs'),
+        encryptLogs: false // Disable encryption for easier testing
+      });
+    });
+    
+    afterEach(() => {
+      auditLogger.destroy();
+    });
+
+    it('should log data access events', async () => {
+      const accessEvent = {
+        category: 'user-data',
+        action: 'read',
+        resource: '/api/users/123',
+        userId: 'user-123',
+        sessionId: 'session-456',
+        ipAddress: '192.168.1.1',
+        userAgent: 'Test Agent',
+        dataType: 'personal',
+        dataSize: 1024,
+        accessMethod: 'api',
+        purpose: 'user_profile',
+        retention: '30_days'
       };
       
-      const clientId = 'test-client';
-      const maxRequests = 5;
-      const windowMs = 60000; // 1 minute
+      await auditLogger.logDataAccess(accessEvent);
       
-      // Should allow first 5 requests
-      for (let i = 0; i < maxRequests; i++) {
-        expect(rateLimiter.isAllowed(clientId, maxRequests, windowMs)).toBe(true);
+      // Query logs to verify
+      const logs = await auditLogger.queryLogs({
+        types: ['data-access'],
+        limit: 10
+      });
+      
+      expect(logs).toHaveLength(1);
+      expect(logs[0].type).toBe('data-access');
+      expect(logs[0].resource).toBe('/api/users/123');
+      expect(logs[0].userId).toBe('user-123');
+    });
+
+    it('should log data transmission events', async () => {
+      const transmissionEvent = {
+        category: 'data-export',
+        action: 'transmit',
+        resource: '/api/export',
+        userId: 'user-789',
+        destination: 'https://external-api.com',
+        protocol: 'https',
+        encryption: 'tls',
+        dataType: 'personal',
+        dataSize: 2048,
+        purpose: 'data_export',
+        thirdParty: true
+      };
+      
+      await auditLogger.logDataTransmission(transmissionEvent);
+      
+      const logs = await auditLogger.queryLogs({
+        types: ['data-transmission'],
+        limit: 10
+      });
+      
+      expect(logs).toHaveLength(1);
+      expect(logs[0].type).toBe('data-transmission');
+      expect(logs[0].details.thirdParty).toBe(true);
+      expect(logs[0].details.encryption).toBe('tls');
+    });
+
+    it('should log consent events', async () => {
+      const consentEvent = {
+        action: 'granted',
+        resource: 'data-processing-consent',
+        userId: 'user-consent-123',
+        consentType: 'data_processing',
+        consentScope: ['analytics', 'marketing'],
+        consentMethod: 'explicit',
+        consentVersion: '1.0',
+        expiresAt: Date.now() + 365 * 24 * 60 * 60 * 1000 // 1 year
+      };
+      
+      await auditLogger.logConsent(consentEvent);
+      
+      const logs = await auditLogger.queryLogs({
+        types: ['consent'],
+        limit: 10
+      });
+      
+      expect(logs).toHaveLength(1);
+      expect(logs[0].type).toBe('consent');
+      expect(logs[0].action).toBe('granted');
+      expect(logs[0].details.consentScope).toEqual(['analytics', 'marketing']);
+    });
+
+    it('should log privacy violations', async () => {
+      const violationEvent = {
+        action: 'unauthorized_access',
+        resource: '/api/sensitive-data',
+        userId: 'user-violation-456',
+        violationType: 'unauthorized_access',
+        severity: 'high' as const,
+        description: 'Attempted access to sensitive data without proper authorization',
+        affectedData: ['personal_info', 'financial_data'],
+        potentialImpact: 'Data breach risk',
+        mitigationActions: ['Access revoked', 'Security team notified']
+      };
+      
+      await auditLogger.logPrivacyViolation(violationEvent);
+      
+      const logs = await auditLogger.queryLogs({
+        types: ['privacy-violation'],
+        limit: 10
+      });
+      
+      expect(logs).toHaveLength(1);
+      expect(logs[0].type).toBe('privacy-violation');
+      expect(logs[0].riskLevel).toBe('critical');
+      expect(logs[0].details.severity).toBe('high');
+    });
+
+    it('should query logs with filters', async () => {
+      // Log multiple events
+      const events = [
+        {
+          category: 'user-data',
+          action: 'read',
+          resource: '/api/users/1',
+          userId: 'user-1',
+          dataType: 'personal',
+          accessMethod: 'api'
+        },
+        {
+          category: 'user-data',
+          action: 'write',
+          resource: '/api/users/2',
+          userId: 'user-2',
+          dataType: 'personal',
+          accessMethod: 'api'
+        },
+        {
+          category: 'system-data',
+          action: 'read',
+          resource: '/api/system/config',
+          userId: 'admin-1',
+          dataType: 'system',
+          accessMethod: 'admin'
+        }
+      ];
+      
+      for (const event of events) {
+        await auditLogger.logDataAccess(event);
       }
       
-      // Should block 6th request
-      expect(rateLimiter.isAllowed(clientId, maxRequests, windowMs)).toBe(false);
+      // Query by user
+      const userLogs = await auditLogger.queryLogs({
+        userId: 'user-1',
+        limit: 10
+      });
+      expect(userLogs).toHaveLength(1);
+      expect(userLogs[0].userId).toBe('user-1');
+      
+      // Query by category
+      const categoryLogs = await auditLogger.queryLogs({
+        categories: ['user-data'],
+        limit: 10
+      });
+      expect(categoryLogs).toHaveLength(2);
+      
+      // Query by resource
+      const resourceLogs = await auditLogger.queryLogs({
+        resource: '/api/users',
+        limit: 10
+      });
+      expect(resourceLogs).toHaveLength(2);
     });
-    
-    test('should sanitize API responses', () => {
-      const unsafeApiResponse = {
-        text: 'Generated story content',
-        metadata: {
-          model: 'gpt-4',
-          usage: { tokens: 100 },
-          internalData: 'sensitive-internal-info',
-          apiKey: 'sk-secret-key'
+
+    it('should generate privacy reports', async () => {
+      // Log some test events
+      const testEvents = [
+        {
+          category: 'user-data',
+          action: 'read',
+          resource: '/api/users/report-test',
+          userId: 'report-user-1',
+          dataType: 'personal',
+          accessMethod: 'api'
+        },
+        {
+          action: 'granted',
+          resource: 'consent-test',
+          userId: 'report-user-1',
+          consentType: 'data_processing',
+          consentScope: ['analytics'],
+          consentMethod: 'explicit',
+          consentVersion: '1.0'
         }
-      };
+      ];
       
-      // Mock response sanitization
-      const sanitizeResponse = (response: any) => {
-        const sanitized = { ...response };
-        
-        if (sanitized.metadata) {
-          delete sanitized.metadata.internalData;
-          delete sanitized.metadata.apiKey;
-          delete sanitized.metadata.userId;
-        }
-        
-        return sanitized;
-      };
+      await auditLogger.logDataAccess(testEvents[0]);
+      await auditLogger.logConsent(testEvents[1]);
       
-      const sanitized = sanitizeResponse(unsafeApiResponse);
+      const report = await auditLogger.generatePrivacyReport({
+        saveReport: false
+      });
       
-      expect(sanitized.text).toBe(unsafeApiResponse.text);
-      expect(sanitized.metadata.model).toBe(unsafeApiResponse.metadata.model);
-      expect(sanitized.metadata.usage).toBe(unsafeApiResponse.metadata.usage);
-      expect(sanitized.metadata.internalData).toBeUndefined();
-      expect(sanitized.metadata.apiKey).toBeUndefined();
+      expect(report).toHaveProperty('reportId');
+      expect(report).toHaveProperty('summary');
+      expect(report).toHaveProperty('dataAccessAnalysis');
+      expect(report).toHaveProperty('transmissionAnalysis');
+      expect(report).toHaveProperty('consentAnalysis');
+      expect(report).toHaveProperty('complianceStatus');
+      expect(report).toHaveProperty('riskAssessment');
+      expect(report).toHaveProperty('recommendations');
+      
+      expect(report.summary.totalEvents).toBeGreaterThan(0);
+      expect(Array.isArray(report.recommendations)).toBe(true);
+    });
+
+    it('should export logs in different formats', async () => {
+      // Log test event
+      await auditLogger.logDataAccess({
+        category: 'export-test',
+        action: 'read',
+        resource: '/api/export-test',
+        userId: 'export-user',
+        dataType: 'test',
+        accessMethod: 'api'
+      });
+      
+      // Test JSON export
+      const jsonPath = await auditLogger.exportLogs({
+        format: 'json',
+        outputPath: path.join(tempDir, 'export.json')
+      });
+      
+      const jsonExists = await fs.access(jsonPath).then(() => true).catch(() => false);
+      expect(jsonExists).toBe(true);
+      
+      // Test CSV export
+      const csvPath = await auditLogger.exportLogs({
+        format: 'csv',
+        outputPath: path.join(tempDir, 'export.csv')
+      });
+      
+      const csvExists = await fs.access(csvPath).then(() => true).catch(() => false);
+      expect(csvExists).toBe(true);
+      
+      // Test XML export
+      const xmlPath = await auditLogger.exportLogs({
+        format: 'xml',
+        outputPath: path.join(tempDir, 'export.xml')
+      });
+      
+      const xmlExists = await fs.access(xmlPath).then(() => true).catch(() => false);
+      expect(xmlExists).toBe(true);
     });
   });
-  
-  describe('File System Security', () => {
-    test('should prevent path traversal attacks', () => {
-      const maliciousPaths = [
-        '../../../etc/passwd',
-        '..\\..\\..\\windows\\system32\\config\\sam',
-        '/etc/shadow',
-        'C:\\Windows\\System32\\config\\SAM',
-        '....//....//....//etc/passwd',
-        '%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd'
-      ];
-      
-      const isPathSafe = (path: string) => {
-        const normalized = path.replace(/\\/g, '/').toLowerCase();
-        return !normalized.includes('../') && 
-               !normalized.includes('..\\') && 
-               !normalized.includes('/etc/') &&
-               !normalized.includes('/windows/') &&
-               !normalized.includes('system32');
-      };
-      
-      maliciousPaths.forEach(path => {
-        expect(isPathSafe(path)).toBe(false);
-      });
-      
-      // Valid paths should be allowed
-      const validPaths = [
-        'stories/my-story.txt',
-        'exports/story-export.pdf',
-        'user-data/preferences.json'
-      ];
-      
-      validPaths.forEach(path => {
-        expect(isPathSafe(path)).toBe(true);
+
+  describe('ConsentManager', () => {
+    let consentManager: ConsentManager;
+    
+    beforeEach(() => {
+      consentManager = new ConsentManager({
+        storePath: path.join(tempDir, 'consent')
       });
     });
     
-    test('should validate file permissions', () => {
-      const testFiles = [
-        { path: 'stories/story.txt', permissions: 'rw-', valid: true },
-        { path: 'system/config.json', permissions: 'r--', valid: true },
-        { path: 'temp/cache.tmp', permissions: 'rwx', valid: false }, // No execute
-        { path: 'exports/output.pdf', permissions: 'rw-', valid: true }
-      ];
+    afterEach(() => {
+      consentManager.destroy();
+    });
+
+    it('should register consent policies', async () => {
+      const policy = {
+        id: 'data-processing',
+        name: 'Data Processing Consent',
+        version: '1.0',
+        description: 'Consent for processing user data for analytics and improvements',
+        purposes: ['analytics', 'service_improvement'],
+        dataTypes: ['usage_data', 'performance_data'],
+        legalBasis: 'consent',
+        defaultScope: ['analytics'],
+        expirationPeriod: 365 * 24 * 60 * 60 * 1000 // 1 year
+      };
       
-      testFiles.forEach(({ path, permissions, valid }) => {
-        const hasExecutePermission = permissions.includes('x');
-        const isValid = !hasExecutePermission || path.includes('bin/');
-        
-        expect(isValid).toBe(valid);
+      await consentManager.registerConsentPolicy(policy);
+      
+      // Verify policy was registered by requesting consent
+      const consentResponse = await consentManager.requestConsent({
+        userId: 'test-user',
+        policyId: 'data-processing'
       });
+      
+      expect(consentResponse).toHaveProperty('consentId');
+      expect(consentResponse.granted).toBe(false); // Not yet granted
+      expect(consentResponse.pendingUserResponse).toBe(true);
     });
-    
-    test('should secure temporary file handling', () => {
-      const createSecureTempFile = (prefix: string) => {
-        const randomSuffix = Math.random().toString(36).substring(2, 15);
-        const tempPath = `temp/${prefix}_${randomSuffix}.tmp`;
-        
-        return {
-          path: tempPath,
-          cleanup: () => {
-            // Mock file deletion
-            return true;
-          },
-          isSecure: () => {
-            return tempPath.startsWith('temp/') && 
-                   tempPath.includes(randomSuffix) &&
-                   tempPath.endsWith('.tmp');
-          }
-        };
+
+    it('should handle consent requests and responses', async () => {
+      // Register policy first
+      const policy = {
+        id: 'marketing-consent',
+        name: 'Marketing Consent',
+        version: '1.0',
+        description: 'Consent for marketing communications',
+        purposes: ['marketing'],
+        dataTypes: ['contact_info'],
+        legalBasis: 'consent',
+        defaultScope: ['email_marketing']
       };
       
-      const tempFile = createSecureTempFile('story-export');
+      await consentManager.registerConsentPolicy(policy);
       
-      expect(tempFile.isSecure()).toBe(true);
-      expect(tempFile.path).toMatch(/^temp\/story-export_[a-z0-9]+\.tmp$/);
-      expect(tempFile.cleanup()).toBe(true);
+      // Request consent
+      const consentResponse = await consentManager.requestConsent({
+        userId: 'marketing-user',
+        policyId: 'marketing-consent',
+        scope: ['email_marketing', 'sms_marketing']
+      });
+      
+      expect(consentResponse.consentId).toBeDefined();
+      
+      // Grant consent
+      await consentManager.recordConsentResponse({
+        consentId: consentResponse.consentId,
+        granted: true,
+        method: 'explicit'
+      });
+      
+      // Verify consent is valid
+      const hasConsent = await consentManager.hasValidConsent(
+        'marketing-user',
+        'marketing-consent'
+      );
+      expect(hasConsent).toBe(true);
     });
-  });
-  
-  describe('Memory Security', () => {
-    test('should clear sensitive data from memory', () => {
-      let sensitiveData = {
-        apiKey: 'sk-sensitive-key',
-        password: 'user-password',
-        token: 'auth-token'
+
+    it('should revoke consent', async () => {
+      // Setup consent
+      const policy = {
+        id: 'revoke-test',
+        name: 'Revoke Test Policy',
+        version: '1.0',
+        description: 'Policy for testing consent revocation',
+        purposes: ['testing'],
+        dataTypes: ['test_data'],
+        legalBasis: 'consent',
+        defaultScope: ['test']
       };
       
-      // Mock secure memory clearing
-      const clearSensitiveData = (obj: any) => {
-        Object.keys(obj).forEach(key => {
-          if (typeof obj[key] === 'string') {
-            obj[key] = '*'.repeat(obj[key].length);
-          }
+      await consentManager.registerConsentPolicy(policy);
+      
+      const consentResponse = await consentManager.requestConsent({
+        userId: 'revoke-user',
+        policyId: 'revoke-test'
+      });
+      
+      await consentManager.recordConsentResponse({
+        consentId: consentResponse.consentId,
+        granted: true
+      });
+      
+      // Verify consent exists
+      let hasConsent = await consentManager.hasValidConsent('revoke-user', 'revoke-test');
+      expect(hasConsent).toBe(true);
+      
+      // Revoke consent
+      await consentManager.revokeConsent('revoke-user', 'revoke-test', 'user_request');
+      
+      // Verify consent is revoked
+      hasConsent = await consentManager.hasValidConsent('revoke-user', 'revoke-test');
+      expect(hasConsent).toBe(false);
+    });
+
+    it('should check consent scope', async () => {
+      const policy = {
+        id: 'scope-test',
+        name: 'Scope Test Policy',
+        version: '1.0',
+        description: 'Policy for testing consent scope',
+        purposes: ['analytics', 'marketing'],
+        dataTypes: ['usage_data', 'contact_info'],
+        legalBasis: 'consent',
+        defaultScope: ['analytics']
+      };
+      
+      await consentManager.registerConsentPolicy(policy);
+      
+      const consentResponse = await consentManager.requestConsent({
+        userId: 'scope-user',
+        policyId: 'scope-test',
+        scope: ['analytics'] // Only analytics, not marketing
+      });
+      
+      await consentManager.recordConsentResponse({
+        consentId: consentResponse.consentId,
+        granted: true
+      });
+      
+      // Should have consent for analytics
+      const hasAnalyticsConsent = await consentManager.hasValidConsent(
+        'scope-user',
+        'scope-test',
+        ['analytics']
+      );
+      expect(hasAnalyticsConsent).toBe(true);
+      
+      // Should not have consent for marketing
+      const hasMarketingConsent = await consentManager.hasValidConsent(
+        'scope-user',
+        'scope-test',
+        ['marketing']
+      );
+      expect(hasMarketingConsent).toBe(false);
+    });
+
+    it('should generate consent reports', async () => {
+      // Setup test data
+      const policy = {
+        id: 'report-test',
+        name: 'Report Test Policy',
+        version: '1.0',
+        description: 'Policy for testing consent reports',
+        purposes: ['testing'],
+        dataTypes: ['test_data'],
+        legalBasis: 'consent',
+        defaultScope: ['test']
+      };
+      
+      await consentManager.registerConsentPolicy(policy);
+      
+      // Create multiple consent records
+      const users = ['report-user-1', 'report-user-2', 'report-user-3'];
+      
+      for (const userId of users) {
+        const consentResponse = await consentManager.requestConsent({
+          userId,
+          policyId: 'report-test'
         });
-      };
+        
+        await consentManager.recordConsentResponse({
+          consentId: consentResponse.consentId,
+          granted: true
+        });
+      }
       
-      clearSensitiveData(sensitiveData);
+      const report = await consentManager.generateConsentReport({
+        saveReport: false
+      });
       
-      expect(sensitiveData.apiKey).toBe('*'.repeat('sk-sensitive-key'.length));
-      expect(sensitiveData.password).toBe('*'.repeat('user-password'.length));
-      expect(sensitiveData.token).toBe('*'.repeat('auth-token'.length));
+      expect(report).toHaveProperty('reportId');
+      expect(report).toHaveProperty('summary');
+      expect(report.summary.totalConsents).toBeGreaterThanOrEqual(3);
+      expect(report.summary.grantedConsents).toBeGreaterThanOrEqual(3);
+      expect(report).toHaveProperty('byPolicy');
+      expect(report).toHaveProperty('byUser');
+      expect(report).toHaveProperty('complianceMetrics');
     });
-    
-    test('should prevent memory dumps of sensitive data', () => {
-      const sensitiveObject = {
-        secret: 'top-secret-data',
-        toString: () => '[REDACTED]',
-        toJSON: () => ({ secret: '[REDACTED]' }),
-        valueOf: () => '[REDACTED]'
+
+    it('should export consent data', async () => {
+      // Setup test consent
+      const policy = {
+        id: 'export-test',
+        name: 'Export Test Policy',
+        version: '1.0',
+        description: 'Policy for testing consent export',
+        purposes: ['testing'],
+        dataTypes: ['test_data'],
+        legalBasis: 'consent',
+        defaultScope: ['test']
       };
       
-      expect(sensitiveObject.toString()).toBe('[REDACTED]');
-      expect(JSON.stringify(sensitiveObject)).toBe('{"secret":"[REDACTED]"}');
-      expect(sensitiveObject.valueOf()).toBe('[REDACTED]');
+      await consentManager.registerConsentPolicy(policy);
+      
+      const consentResponse = await consentManager.requestConsent({
+        userId: 'export-user',
+        policyId: 'export-test'
+      });
+      
+      await consentManager.recordConsentResponse({
+        consentId: consentResponse.consentId,
+        granted: true
+      });
+      
+      // Test JSON export
+      const jsonPath = await consentManager.exportConsentData({
+        format: 'json',
+        outputPath: path.join(tempDir, 'consent-export.json')
+      });
+      
+      const jsonExists = await fs.access(jsonPath).then(() => true).catch(() => false);
+      expect(jsonExists).toBe(true);
+      
+      // Test CSV export
+      const csvPath = await consentManager.exportConsentData({
+        format: 'csv',
+        outputPath: path.join(tempDir, 'consent-export.csv')
+      });
+      
+      const csvExists = await fs.access(csvPath).then(() => true).catch(() => false);
+      expect(csvExists).toBe(true);
     });
   });
-  
-  describe('Security Audit and Compliance', () => {
-    test('should log security events', () => {
-      const securityLogger = {
-        events: [] as any[],
-        
-        logSecurityEvent: (event: string, details: any) => {
-          securityLogger.events.push({
-            timestamp: new Date().toISOString(),
-            event,
-            details,
-            severity: details.severity || 'info'
-          });
-        }
-      };
-      
-      // Mock security events
-      securityLogger.logSecurityEvent('login_attempt', { userId: 'user123', success: true, severity: 'info' });
-      securityLogger.logSecurityEvent('invalid_api_key', { provider: 'openai', severity: 'warning' });
-      securityLogger.logSecurityEvent('file_access_denied', { path: '../etc/passwd', severity: 'high' });
-      
-      expect(securityLogger.events).toHaveLength(3);
-      expect(securityLogger.events[0].event).toBe('login_attempt');
-      expect(securityLogger.events[1].severity).toBe('warning');
-      expect(securityLogger.events[2].severity).toBe('high');
+
+  describe('PluginSandbox', () => {
+    let pluginSandbox: PluginSandbox;
+    
+    beforeEach(() => {
+      pluginSandbox = new PluginSandbox({
+        maxMemory: 64 * 1024 * 1024, // 64MB for testing
+        maxCpuTime: 1000, // 1 second
+        allowNetworkAccess: false,
+        allowFileSystemAccess: false,
+        auditPath: path.join(tempDir, 'sandbox-audit')
+      });
     });
     
-    test('should validate security configuration', () => {
-      const securityConfig = {
-        encryption: { enabled: true, algorithm: 'AES-256' },
-        authentication: { required: true, sessionTimeout: 3600 },
-        fileAccess: { restrictedPaths: ['/etc', '/sys', '/proc'] },
-        network: { httpsOnly: true, allowedDomains: ['api.openai.com', 'api.anthropic.com'] }
-      };
+    afterEach(async () => {
+      await pluginSandbox.destroy();
+    });
+
+    it('should create and execute code in sandbox', async () => {
+      const sandboxId = await pluginSandbox.createSandbox('test-plugin', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
       
-      const validateSecurityConfig = (config: any) => {
-        const issues = [];
-        
-        if (!config.encryption?.enabled) {
-          issues.push('Encryption is not enabled');
+      expect(sandboxId).toBeDefined();
+      
+      const result = await pluginSandbox.executeInSandbox(
+        'test-plugin',
+        'const x = 5; const y = 10; x + y;'
+      );
+      
+      expect(result).toBe(15);
+    });
+
+    it('should enforce resource limits', async () => {
+      await pluginSandbox.createSandbox('resource-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      // Test CPU timeout
+      await expect(
+        pluginSandbox.executeInSandbox(
+          'resource-test',
+          'while(true) { /* infinite loop */ }'
+        )
+      ).rejects.toThrow();
+    });
+
+    it('should block dangerous operations', async () => {
+      await pluginSandbox.createSandbox('security-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      // Test blocked require
+      await expect(
+        pluginSandbox.executeInSandbox(
+          'security-test',
+          'require("fs").readFileSync("/etc/passwd")'
+        )
+      ).rejects.toThrow();
+    });
+
+    it('should manage permissions', async () => {
+      await pluginSandbox.createSandbox('permission-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      // Grant network permission
+      await pluginSandbox.grantPermission('permission-test', {
+        name: 'network',
+        scope: ['https://api.example.com']
+      });
+      
+      const permissions = await pluginSandbox.getPluginPermissions('permission-test');
+      expect(permissions).toHaveLength(1);
+      expect(permissions[0].name).toBe('network');
+      
+      // Revoke permission
+      await pluginSandbox.revokePermission('permission-test', 'network');
+      
+      const updatedPermissions = await pluginSandbox.getPluginPermissions('permission-test');
+      expect(updatedPermissions).toHaveLength(0);
+    });
+
+    it('should provide sandbox status', async () => {
+      await pluginSandbox.createSandbox('status-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      const status = pluginSandbox.getSandboxStatus('status-test');
+      
+      expect(status).toBeDefined();
+      expect(status!.pluginId).toBe('status-test');
+      expect(status!.state).toBe('ready');
+      expect(status!).toHaveProperty('uptime');
+      expect(status!).toHaveProperty('resourceUsage');
+      expect(status!).toHaveProperty('permissions');
+    });
+
+    it('should pause and resume sandbox', async () => {
+      await pluginSandbox.createSandbox('pause-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      await pluginSandbox.pauseSandbox('pause-test');
+      
+      let status = pluginSandbox.getSandboxStatus('pause-test');
+      expect(status!.state).toBe('paused');
+      
+      await pluginSandbox.resumeSandbox('pause-test');
+      
+      status = pluginSandbox.getSandboxStatus('pause-test');
+      expect(status!.state).toBe('ready');
+    });
+
+    it('should terminate sandbox', async () => {
+      await pluginSandbox.createSandbox('terminate-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      let status = pluginSandbox.getSandboxStatus('terminate-test');
+      expect(status).toBeDefined();
+      
+      await pluginSandbox.terminateSandbox('terminate-test');
+      
+      status = pluginSandbox.getSandboxStatus('terminate-test');
+      expect(status).toBeNull();
+    });
+
+    it('should generate security reports', async () => {
+      await pluginSandbox.createSandbox('report-test', {
+        permissions: [{ name: 'network' }],
+        isolationLevel: 'vm'
+      });
+      
+      // Execute some code to generate audit events
+      await pluginSandbox.executeInSandbox('report-test', '1 + 1');
+      
+      const report = await pluginSandbox.generateSecurityReport();
+      
+      expect(report).toHaveProperty('reportId');
+      expect(report).toHaveProperty('summary');
+      expect(report).toHaveProperty('sandboxStatuses');
+      expect(report).toHaveProperty('recentEvents');
+      expect(report).toHaveProperty('riskAssessment');
+      expect(report).toHaveProperty('recommendations');
+      
+      expect(report.summary.totalSandboxes).toBeGreaterThan(0);
+      expect(Array.isArray(report.recommendations)).toBe(true);
+    });
+
+    it('should load plugin files', async () => {
+      await pluginSandbox.createSandbox('file-test', {
+        permissions: [],
+        isolationLevel: 'vm'
+      });
+      
+      // Create test plugin file
+      const pluginPath = path.join(tempDir, 'test-plugin.js');
+      const pluginCode = `
+        function greet(name) {
+          return 'Hello, ' + name + '!';
         }
         
-        if (!config.authentication?.required) {
-          issues.push('Authentication is not required');
-        }
+        exports.greet = greet;
+      `;
+      
+      await fs.writeFile(pluginPath, pluginCode);
+      
+      await pluginSandbox.loadPlugin('file-test', pluginPath);
+      
+      const result = await pluginSandbox.callPluginMethod('file-test', 'greet', ['World']);
+      expect(result).toBe('Hello, World!');
+    });
+  });
+
+  describe('Security Integration', () => {
+    it('should integrate all security components', async () => {
+      // Initialize all components
+      const credentialManager = new CredentialManager({
+        serviceName: 'integration-test'
+      });
+      
+      const dataEncryption = new DataEncryption({
+        dataPath: path.join(tempDir, 'integration-encrypted')
+      });
+      
+      const auditLogger = new PrivacyAuditLogger({
+        logPath: path.join(tempDir, 'integration-audit'),
+        encryptLogs: false
+      });
+      
+      const consentManager = new ConsentManager({
+        storePath: path.join(tempDir, 'integration-consent')
+      });
+      
+      try {
+        // Test credential storage with encryption
+        await dataEncryption.setUserKey('integration-password');
         
-        if (!config.network?.httpsOnly) {
-          issues.push('HTTPS is not enforced');
-        }
-        
-        if (config.authentication?.sessionTimeout > 86400) { // 24 hours
-          issues.push('Session timeout is too long');
-        }
-        
-        return {
-          isValid: issues.length === 0,
-          issues
+        const credential = {
+          type: 'api-key' as const,
+          data: { apiKey: 'integration-test-key' }
         };
-      };
-      
-      const validation = validateSecurityConfig(securityConfig);
-      
-      expect(validation.isValid).toBe(true);
-      expect(validation.issues).toHaveLength(0);
+        
+        await credentialManager.storeCredential('integration-provider', credential);
+        
+        // Log the credential access
+        await auditLogger.logDataAccess({
+          category: 'credentials',
+          action: 'store',
+          resource: 'integration-provider',
+          userId: 'integration-user',
+          dataType: 'credentials',
+          accessMethod: 'api'
+        });
+        
+        // Register consent policy
+        const policy = {
+          id: 'integration-policy',
+          name: 'Integration Test Policy',
+          version: '1.0',
+          description: 'Policy for integration testing',
+          purposes: ['testing'],
+          dataTypes: ['test_data'],
+          legalBasis: 'consent',
+          defaultScope: ['test']
+        };
+        
+        await consentManager.registerConsentPolicy(policy);
+        
+        // Request and grant consent
+        const consentResponse = await consentManager.requestConsent({
+          userId: 'integration-user',
+          policyId: 'integration-policy'
+        });
+        
+        await consentManager.recordConsentResponse({
+          consentId: consentResponse.consentId,
+          granted: true
+        });
+        
+        // Log consent event
+        await auditLogger.logConsent({
+          action: 'granted',
+          resource: 'integration-policy',
+          userId: 'integration-user',
+          consentType: 'data_processing',
+          consentScope: ['test'],
+          consentMethod: 'explicit',
+          consentVersion: '1.0'
+        });
+        
+        // Verify everything works together
+        const retrievedCredential = await credentialManager.getCredential('integration-provider');
+        expect(retrievedCredential).toBeDefined();
+        
+        const hasConsent = await consentManager.hasValidConsent('integration-user', 'integration-policy');
+        expect(hasConsent).toBe(true);
+        
+        const auditLogs = await auditLogger.queryLogs({ limit: 10 });
+        expect(auditLogs.length).toBeGreaterThan(0);
+        
+        // Generate comprehensive security report
+        const privacyReport = await auditLogger.generatePrivacyReport();
+        const consentReport = await consentManager.generateConsentReport();
+        
+        expect(privacyReport.summary.totalEvents).toBeGreaterThan(0);
+        expect(consentReport.summary.totalConsents).toBeGreaterThan(0);
+        
+      } finally {
+        // Cleanup
+        credentialManager.destroy();
+        dataEncryption.destroy();
+        auditLogger.destroy();
+        consentManager.destroy();
+      }
     });
   });
 });
